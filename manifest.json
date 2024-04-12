@@ -1,0 +1,1 @@
+{  "manifest_version": 2,  "name": "Hacker News Mod",  "version": "1.0",  "description": "Chrome extension for customizing Hacker News.",  "permissions": [    "activeTab"  ],  "content_scripts": [    {      "matches": ["https://news.ycombinator.com/*"],      "js": ["content.js"],      "css": ["styles.css"]    }  ]}
