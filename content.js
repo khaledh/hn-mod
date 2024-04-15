@@ -8,42 +8,44 @@ const CI_KEYWORDS = [
   'llama', 'mistral', 'mixtral', 'stablelm',
   'kubernetes', 'crypto', 'cryptocurrency', 'blockchain', 'ethereum', 'bitcoin',
   'apple watch', '3d print', '3d printer', '3d printing',
-  'twitter', 'tesla', 'cybertruck', 'spacex', 'battery', 'microscope', 'telescope',
-  'quantum', 'academic', 'academia',
-  'openstreetmap', 'nintendo', 'tiktok',
-  'mastodon', 'fediverse', 'social media',
+  'facebook', 'instagram', 'twitter', 'tesla', 'cybertruck', 'spacex', 'battery', 'microscope', 'telescope',
+  'quantum', 'academic', 'academia', 'mathematics', 'geometry',
+  'openstreetmap', 'nintendo', 'game boy', 'tiktok', 'tailscale',
+  'mastodon', 'fediverse', 'social media', 'music',
   'webb', 'satellite', 'satellites',
   'u.s.', 'china', 'chinese', 'japan', 'japanese', 'india', 'indian', 'saudi', 'vietnam', 'vietnamese',
-  'american',
+  'american', 'americans',
   'ukraine', 'ukrainian', 'russia', 'russian', 'military', 'war', 'drone',
   'climate', 'weather', 'solar', 'lunar',
   'mental', 'depression', 'anxiety', 'loneliness', 'suicide', 'public health',
   'asthma', 'cancer', 'abortion', 'metabolism', 'protein', 'pregnancy', 'abortion',
   'boeing', 'congress', 'biden', 'trump',
-  'heat pump', 'housing', 'rent', 'rents', 'basic income', 'unemployment',
+  'heat pump', 'housing', 'rent', 'rents', 'basic income', 'unemployment', 'employee', 'employees',
 ];
 
 // case-sensitive keywords
 const CS_KEYWORDS = [
-  'AI', 'A.I.', 'A.I', 'ML',
+  'AI', 'A.I.', 'A.I', 'AGI', 'ML',
   'ISP', 'ISPs',
   'EV', 'EVs',
-  'PFAS',
-  'America', 'US', 'EU', 'UK', 'Africa', 'Asia', 'Australia', 'Taiwan',
+  'PFAS', 'DMCA',
+  'America', 'US', 'EU', 'Europe', 'UK', 'Africa', 'Asia', 'Australia', 'Taiwan',
   'Norway', 'Brazil', 'Israel',
   'Bay Area', 'San Francisco', 'California', 'New York', 'NYC',
   'Musk',
   'TSMC', 'NES',
-  'CIA', 'NSA', 'CISA', 'FISA', 'NASA', 'EPA', 'NTSB', 'DOE',
+  'CIA', 'NSA', 'CISA', 'FISA', 'NASA', 'EPA', 'NTSB', 'DOE', 'FCC',
 ]
 
 const SITES = [
   'theatlantic.com', 'arstechnica.com', 'theverge.com', 'techcrunch.com', 'engadget.com',
-  'bbc.com', 'cnn.com', 'msn.com', 'reuters.com', 'theguardian.com', 'washingtonpost.com',
+  'bbc.com', 'cnn.com', 'msn.com', 'reuters.com', 'theguardian.com', 'washingtonpost.com', 'apnews.com',
   'usatoday.com', 'nytimes.com', 'latimes.com', 'bloomberg.com', 'bnnbloomberg.ca', 'wsj.com',
-  'fortune.com', 'cbc.ca', 'npr.org', 'gallup.com',
+  'fortune.com', 'cbc.ca', 'npr.org', 'gallup.com', 'euronews.com', 'consumerreports.org',
   'phys.org', 'science.org', 'sciencedirect.com', 'sciencealert.com', 'sciencenews.org', 'nature.com',
-  'springer.com', 'smithsonianmag.com', 'eff.org', 'justice.gov',
+  'springer.com', 'smithsonianmag.com', 'eff.org', 'justice.gov', 'forbes.com', 'economist.com',
+  'livescience.com', 'scientificamerican.com', 'newyorker.com', 'cnbc.com', 'thesun.co.uk',
+  'nationalpost.com', 'sciencedaily.com', 'nih.gov'
 ]
 
 
