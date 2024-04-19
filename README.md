@@ -1,4 +1,4 @@
-# Hacker News Mode chrome extension
+# Hacker News Mod chrome extension
 
 This is a very early version of a chrome extension I use personally to "dim" stories based on keywords and/or domain names. You can also dim/undim stories manually (a link is added under each story).
 
