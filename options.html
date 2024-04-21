@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Hacker News Mod options</title>
+  <style>
+    .section {
+      margin-bottom: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Hacker News Mod options</h2>
+
+  <!-- text area for case-insensitive keywords -->
+  <div class="section">
+    <label for="keywords">Keywords (case-insensitive):</label><br>
+    <textarea id="ci-keywords" rows="8" cols="100"></textarea>
+  </div>
+
+  <!-- text area for case-sensitive keywords -->
+  <div class="section">
+    <label for="keywords">Keywords (case-sensitive):</label><br>
+    <textarea id="cs-keywords" rows="8" cols="100"></textarea>
+  </div>
+
+  <!-- text area for case-insensitive domains -->
+  <div class="section">
+    <label for="domains">Domains (case-insensitive):</label><br>
+    <textarea id="domains" rows="8" cols="100"></textarea>
+  </div>
+
+  
+  <button id="save">Save</button> <span id="status"></span>
+
+  <script src="options.js"></script>
+</body>
+
+</html>
