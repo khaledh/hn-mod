@@ -3,6 +3,7 @@ let
     CS_KEYWORDS = [],
     DOMAINS = [],
     DIMMED_ENTRIES = [];
+    UNDIMMED_ENTRIES = []; // allows user to undim entries that were dimmed by the keyword filters
 
 // Function to dim titles, reduce font size, add a dimming link, and persist dimmed state
 function adjustTitlesAndPersistDimming() {
@@ -46,14 +47,27 @@ function adjustTitlesAndPersistDimming() {
         }
 
         if (doSave) {
-            // Update the stored list of dimmed entries
-            const index = DIMMED_ENTRIES.indexOf(entryId);
-            if (isDimming && index === -1) {
+            // Update dimmed entries
+            const dimmedIndex = DIMMED_ENTRIES.indexOf(entryId);
+            if (isDimming && dimmedIndex === -1) {
+                // not found, add it
                 DIMMED_ENTRIES.push(entryId);
-            } else if (!isDimming && index !== -1) {
-                DIMMED_ENTRIES.splice(index, 1);
+            } else if (!isDimming && dimmedIndex !== -1) {
+                // found, remove it
+                DIMMED_ENTRIES.splice(dimmedIndex, 1);
             }
             chrome.storage.sync.set({ dimmedEntries: DIMMED_ENTRIES });
+
+            // Update undimmed entries
+            const undimmedIndex = UNDIMMED_ENTRIES.indexOf(entryId);
+            if (!isDimming && undimmedIndex === -1) {
+                // not found, add it
+                UNDIMMED_ENTRIES.push(entryId);
+            } else if (isDimming && undimmedIndex !== -1) {
+                // found, remove it
+                UNDIMMED_ENTRIES.splice(undimmedIndex, 1);
+            }
+            chrome.storage.sync.set({ undimmedEntries: UNDIMMED_ENTRIES });
         }
     };
 
@@ -87,7 +101,9 @@ function adjustTitlesAndPersistDimming() {
                 CI_KEYWORDS.some(kw => (new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`)).test(title.innerText.toLowerCase()))
             );
         }
-        const isInitiallyDimmed = checkTitle(titleLink, siteLink) || DIMMED_ENTRIES.includes(entryId);
+        const isInitiallyDimmed = !UNDIMMED_ENTRIES.includes(entryId) && (
+            checkTitle(titleLink, siteLink) || DIMMED_ENTRIES.includes(entryId)
+        );
         if (isInitiallyDimmed) {
             applyDimmingEffect(titleCells, subtext, entryId, spacingRowPrev, spacingRowNext, tdRank, tdVoteLinks, true, false);
         }
@@ -115,12 +131,13 @@ function adjustTitlesAndPersistDimming() {
 }
 
 chrome.storage.sync.get(
-    { ciKeywords: [], csKeywords: [], domains: [], dimmedEntries: [] },
+    { ciKeywords: [], csKeywords: [], domains: [], dimmedEntries: [], undimmedEntries: [] },
     (items) => {
         CI_KEYWORDS = items.ciKeywords;
         CS_KEYWORDS = items.csKeywords;
         DOMAINS = items.domains;
         DIMMED_ENTRIES = items.dimmedEntries;
+        UNDIMMED_ENTRIES = items.undimmedEntries;
 
         adjustTitlesAndPersistDimming();
     }
