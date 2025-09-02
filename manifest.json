@@ -1,13 +1,16 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Hacker News Mod",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Chrome extension for customizing Hacker News.",
   "permissions": [
-    "tabs", "activeTab", "storage"
+    "activeTab", "storage"
+  ],
+  "host_permissions": [
+    "https://news.ycombinator.com/*"
   ],
   "background": {
-    "scripts": ["hot-reload.js"]
+    "service_worker": "hot-reload.js"
   },
   "content_scripts": [
     {
@@ -16,5 +19,8 @@
       "css": ["styles.css"]
     }
   ],
-  "options_page": "options.html"
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
 }
