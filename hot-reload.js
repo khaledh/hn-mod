@@ -1,3 +1,5 @@
+importScripts('background.js');
+
 let lastReloadTime = Date.now();
 
 const watchChanges = () => {
