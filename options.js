@@ -44,5 +44,21 @@ const restoreOptions = () => {
   );
 };
 
+const resetTracking = () => {
+  chrome.storage.local.remove(
+    ['storyFirstSeen', 'apiRanks', 'stableRank', 'rankChangedAt', 'rankDiff', 'seenStories'],
+    () => {
+      const status = document.getElementById('reset-status');
+      status.textContent = 'Tracking data reset.';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+
+      chrome.tabs.query({"url": "https://news.ycombinator.com/*"}, function(tabs) {
+        tabs.forEach(tab => { chrome.tabs.reload(tab.id) });
+      });
+    }
+  );
+};
+
 document.addEventListener('DOMContentLoaded', restoreOptions);
 document.getElementById('save').addEventListener('click', saveOptions);
+document.getElementById('reset-tracking').addEventListener('click', resetTracking);

@@ -4,7 +4,7 @@
   "version": "1.1",
   "description": "Chrome extension for customizing Hacker News.",
   "permissions": [
-    "activeTab", "storage"
+    "activeTab", "storage", "alarms"
   ],
   "host_permissions": [
     "https://news.ycombinator.com/*"
