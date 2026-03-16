@@ -236,13 +236,15 @@ function markNewAndTrendingStories(storyFirstSeen, rankChangedAt, rankDiff, seen
     markVisibleStoriesAsSeen(seenStories);
 }
 
+// Mark visible stories as seen, storing the timestamp of first viewing
 function markVisibleStoriesAsSeen(seenStories) {
     const titleRows = document.querySelectorAll(".athing");
+    const now = Date.now();
     let updated = false;
     titleRows.forEach(trTitle => {
         const entryId = trTitle.getAttribute("id");
         if (entryId && !seenStories[entryId]) {
-            seenStories[entryId] = true;
+            seenStories[entryId] = now;
             updated = true;
         }
     });
@@ -253,8 +255,6 @@ function markVisibleStoriesAsSeen(seenStories) {
 
 const INDICATOR_FADE_MS = 15 * 60 * 1000; // 15 minutes
 
-const MAX_DOT_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — oldest unseen stories get minimum opacity
-
 // Build an indicator td for a story row
 function buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
     const td = document.createElement("td");
@@ -264,26 +264,37 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, se
     if (!entryId) return td;
 
     const now = Date.now();
+    const seenAt = seenStories[entryId]; // timestamp when user first saw this story
 
-    // New story dot — shown if you haven't seen this story yet, opacity based on age
-    const firstSeen = storyFirstSeen[entryId];
-    const isUnseen = !seenStories[entryId];
-    if (isUnseen && firstSeen) {
-        const age = now - firstSeen;
-        // Opacity: 1.0 for brand new, fades to 0.15 minimum for old unseen stories
-        const opacity = Math.max(0.15, 1 - (age / MAX_DOT_AGE_MS));
+    // New story dot — shown if you haven't seen this story yet
+    // On first view, seenAt is not set yet (set after indicators are built)
+    // Fades over 15 min from the moment you first saw it
+    if (!seenAt) {
+        // First time seeing — full intensity
         const marker = document.createElement("span");
         marker.textContent = "\u2022";
-        marker.style.cssText = `color: #ff6600; font-size: 20px; line-height: 10px; font-weight: bold; opacity: ${opacity.toFixed(2)}; display: block;`;
+        marker.style.cssText = "color: #ff6600; font-size: 20px; line-height: 10px; font-weight: bold; opacity: 1; display: block;";
         td.appendChild(marker);
+    } else {
+        const dotAge = now - seenAt;
+        if (dotAge < INDICATOR_FADE_MS) {
+            const opacity = 1 - (dotAge / INDICATOR_FADE_MS);
+            const marker = document.createElement("span");
+            marker.textContent = "\u2022";
+            marker.style.cssText = `color: #ff6600; font-size: 20px; line-height: 10px; font-weight: bold; opacity: ${opacity.toFixed(2)}; display: block;`;
+            td.appendChild(marker);
+        }
     }
 
     // Trend arrow
+    // Fades from max(rankChangedAt, seenAt) — full intensity if change happened
+    // while away, or if it just changed now
     const changedAt = rankChangedAt[entryId];
     const diff = rankDiff[entryId];
 
     if (changedAt && diff) {
-        const trendAge = now - changedAt;
+        const fadeStart = Math.max(changedAt, seenAt || now);
+        const trendAge = now - fadeStart;
         if (trendAge < INDICATOR_FADE_MS) {
             let trendIndicator = null;
 
@@ -355,8 +366,10 @@ function observeNewRows(storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
                     const td = buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, seenStories);
                     node.insertBefore(td, node.firstChild);
                     // Mark dynamically added stories as seen
-                    seenStories[entryId] = true;
-                    chrome.storage.local.set({ seenStories });
+                    if (!seenStories[entryId]) {
+                        seenStories[entryId] = Date.now();
+                        chrome.storage.local.set({ seenStories });
+                    }
                 } else {
                     addEmptyIndicatorToRow(node);
                 }
