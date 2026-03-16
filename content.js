@@ -216,9 +216,51 @@ function snapshotVisibleStories(storyFirstSeen) {
     }
 }
 
-function markNewAndTrendingStories(storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
+// Get current page ranks (1-based position) for each story
+function getPageRanks() {
+    const ranks = {};
+    const titleRows = document.querySelectorAll(".athing");
+    titleRows.forEach((trTitle, index) => {
+        const entryId = trTitle.getAttribute("id");
+        if (entryId) {
+            ranks[entryId] = index + 1;
+        }
+    });
+    return ranks;
+}
+
+// Detect rank changes by comparing current page positions to stored previousPageRanks
+function detectRankChanges(previousPageRanks, rankChangedAt, rankDiff) {
+    const currentRanks = getPageRanks();
+    const now = Date.now();
+    let updated = false;
+
+    for (const id of Object.keys(currentRanks)) {
+        if (previousPageRanks[id] !== undefined && previousPageRanks[id] !== currentRanks[id]) {
+            const diff = previousPageRanks[id] - currentRanks[id]; // positive = moved up
+            // Only update if the diff changed (avoid re-recording same movement)
+            if (rankDiff[id] !== diff) {
+                rankChangedAt[id] = now;
+                rankDiff[id] = diff;
+                updated = true;
+            }
+        }
+    }
+
+    // Save current ranks as previous for next page load
+    chrome.storage.local.set({ previousPageRanks: currentRanks });
+
+    if (updated) {
+        chrome.storage.local.set({ rankChangedAt, rankDiff });
+    }
+}
+
+function markNewAndTrendingStories(storyFirstSeen, previousPageRanks, rankChangedAt, rankDiff, seenStories) {
     // Record new stories on the page
     snapshotVisibleStories(storyFirstSeen);
+
+    // Detect rank changes before building indicators
+    detectRankChanges(previousPageRanks, rankChangedAt, rankDiff);
 
     // Insert indicator cells into story rows (and fix alignment for other rows)
     const allRows = document.querySelectorAll("tr.athing, tr.athing + tr, tr.spacer");
@@ -375,6 +417,10 @@ function observeNewRows(storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
                 }
             }
         }
+
+        // After any DOM change (hide/unhide), update stored ranks to current page state
+        // so the next page load doesn't see false rank changes
+        chrome.storage.local.set({ previousPageRanks: getPageRanks() });
     });
 
     observer.observe(storyTable, { childList: true, subtree: true });
@@ -397,10 +443,11 @@ chrome.storage.sync.get(
 
         // Load snapshot data and mark new/trending stories
         chrome.storage.local.get(
-            { storyFirstSeen: {}, rankChangedAt: {}, rankDiff: {}, seenStories: {} },
+            { storyFirstSeen: {}, previousPageRanks: {}, rankChangedAt: {}, rankDiff: {}, seenStories: {} },
             (localItems) => {
                 markNewAndTrendingStories(
                     localItems.storyFirstSeen,
+                    localItems.previousPageRanks,
                     localItems.rankChangedAt,
                     localItems.rankDiff,
                     localItems.seenStories
