@@ -332,32 +332,27 @@ const INDICATOR_FADE_MS = 30 * 60 * 1000; // 30 minutes
 function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories) {
     const td = document.createElement("td");
     td.className = "hn-mod-indicator-cell";
-    td.style.cssText = "width: 24px; text-align: center; vertical-align: middle; padding: 0; line-height: 0;";
+    td.style.cssText = "min-width: 30px; text-align: right; vertical-align: middle; padding: 0 2px 0 0; white-space: nowrap;";
 
     if (!entryId) return td;
 
     const now = Date.now();
     const seenAt = seenStories[entryId];
 
-    // New story dot — fades over 30 min from when you first saw it
+    // Compute dot opacity — fades over 30 min from when you first saw it
+    let dotOpacity = 0;
     if (!seenAt) {
-        const marker = document.createElement("span");
-        marker.textContent = "\u2022";
-        marker.style.cssText = "color: #ff6600; font-size: 20px; line-height: 10px; font-weight: bold; opacity: 1; display: block;";
-        td.appendChild(marker);
+        dotOpacity = 1;
     } else {
         const dotAge = now - seenAt;
         if (dotAge < INDICATOR_FADE_MS) {
-            const opacity = 1 - (dotAge / INDICATOR_FADE_MS);
-            const marker = document.createElement("span");
-            marker.textContent = "\u2022";
-            marker.style.cssText = `color: #ff6600; font-size: 20px; line-height: 10px; font-weight: bold; opacity: ${opacity.toFixed(2)}; display: block;`;
-            td.appendChild(marker);
+            dotOpacity = 1 - (dotAge / INDICATOR_FADE_MS);
         }
     }
 
     // Trend arrow — fades over 30 min from when the diff last changed, resets on change
     const diff = rankDiff[entryId];
+    let hasArrow = false;
 
     if (diff) {
         let trendIndicator = null;
@@ -369,7 +364,6 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt
         }
 
         if (trendIndicator) {
-            // Compute arrow opacity based on time since diff last changed
             let arrowOpacity = 1;
             const changedEntry = rankDiffChangedAt[entryId];
             if (changedEntry) {
@@ -382,16 +376,17 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt
             }
 
             if (arrowOpacity > 0) {
+                hasArrow = true;
                 const marker = document.createElement("span");
-                marker.style.cssText = `color: ${trendIndicator.color}; line-height: 12px; display: block; opacity: ${arrowOpacity.toFixed(2)};`;
+                marker.style.cssText = `color: ${trendIndicator.color}; opacity: ${arrowOpacity.toFixed(2)}; vertical-align: middle;`;
 
                 const num = document.createElement("span");
                 num.textContent = trendIndicator.number;
-                num.style.cssText = "font-size: 9px;";
+                num.style.cssText = "font-size: 8px;";
 
                 const arrow = document.createElement("span");
                 arrow.textContent = trendIndicator.symbol;
-                arrow.style.cssText = "font-size: 13px;";
+                arrow.style.cssText = "font-size: 11px;";
 
                 marker.appendChild(num);
                 marker.appendChild(arrow);
@@ -399,6 +394,16 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt
             }
         }
     }
+
+    // New story dot — always reserve space so arrow position stays consistent
+    const dot = document.createElement("span");
+    dot.textContent = "\u2022";
+    if (dotOpacity > 0) {
+        dot.style.cssText = `color: #ff6600; font-size: 14px; font-weight: bold; opacity: ${dotOpacity.toFixed(2)}; vertical-align: middle; margin-right: 3px;${hasArrow ? " margin-left: 3px;" : ""}`;
+    } else {
+        dot.style.cssText = `font-size: 14px; font-weight: bold; opacity: 0; vertical-align: middle; margin-right: 3px;${hasArrow ? " margin-left: 3px;" : ""}`;
+    }
+    td.appendChild(dot);
 
     return td;
 }

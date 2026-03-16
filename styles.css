@@ -1,0 +1,4 @@
+/* Vertically center all cells in story rows */
+tr.athing > td {
+    vertical-align: middle !important;
+}
