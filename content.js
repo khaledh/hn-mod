@@ -253,7 +253,7 @@ function markVisibleStoriesAsSeen(seenStories) {
     }
 }
 
-const INDICATOR_FADE_MS = 15 * 60 * 1000; // 15 minutes
+const INDICATOR_FADE_MS = 30 * 60 * 1000; // 30 minutes
 
 // Build an indicator td for a story row
 function buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, seenStories) {

@@ -1,7 +1,7 @@
 const ALARM_NAME = "hn-snapshot";
 const SNAPSHOT_INTERVAL_MINUTES = 5;
 const PRUNE_AGE_MS = 72 * 60 * 60 * 1000; // 72 hours
-const FADE_MS = 15 * 60 * 1000; // 15 minutes — must match content.js INDICATOR_FADE_MS
+const FADE_MS = 30 * 60 * 1000; // 30 minutes — must match content.js INDICATOR_FADE_MS
 const HN_TOP_STORIES_URL = "https://hacker-news.firebaseio.com/v0/topstories.json";
 
 // Fetch current top stories and record first-seen times
