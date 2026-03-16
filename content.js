@@ -216,6 +216,9 @@ function snapshotVisibleStories(storyFirstSeen) {
     }
 }
 
+const RANK_WINDOW_MS = 30 * 60 * 1000; // 30 minute rolling window
+const RANK_HISTORY_MAX_AGE_MS = 35 * 60 * 1000; // prune entries older than 35 min
+
 // Get current page ranks (1-based position) for each story
 function getPageRanks() {
     const ranks = {};
@@ -229,45 +232,73 @@ function getPageRanks() {
     return ranks;
 }
 
-// Detect rank changes by comparing current page positions to stored previousPageRanks
-function detectRankChanges(previousPageRanks, rankChangedAt, rankDiff) {
-    const currentRanks = getPageRanks();
+// Compute rank diffs given current ranks against the rolling window baseline.
+// Updates rankDiffChangedAt to track when each story's diff last changed (for fading).
+// Does NOT push a new snapshot — caller is responsible for that.
+function computeRankDiffsFromHistory(rankHistory, currentRanks, rankDiffChangedAt) {
     const now = Date.now();
-    let updated = false;
 
-    for (const id of Object.keys(currentRanks)) {
-        if (previousPageRanks[id] !== undefined && previousPageRanks[id] !== currentRanks[id]) {
-            const diff = previousPageRanks[id] - currentRanks[id]; // positive = moved up
-            // Only update if the diff changed (avoid re-recording same movement)
-            if (rankDiff[id] !== diff) {
-                rankChangedAt[id] = now;
-                rankDiff[id] = diff;
-                updated = true;
+    // Prune entries older than 35 minutes
+    while (rankHistory.length > 0 && (now - rankHistory[0].timestamp) > RANK_HISTORY_MAX_AGE_MS) {
+        rankHistory.shift();
+    }
+
+    // Find the oldest entry that's at least ~30 minutes old
+    // If none is old enough, use the oldest available
+    let baseline = rankHistory[0];
+    for (const entry of rankHistory) {
+        if ((now - entry.timestamp) >= RANK_WINDOW_MS) {
+            baseline = entry;
+            break;
+        }
+    }
+
+    // Compute diffs against baseline
+    const rankDiff = {};
+    if (baseline && baseline.timestamp !== now) {
+        for (const id of Object.keys(currentRanks)) {
+            if (baseline.ranks[id] !== undefined && baseline.ranks[id] !== currentRanks[id]) {
+                rankDiff[id] = baseline.ranks[id] - currentRanks[id]; // positive = moved up
             }
         }
     }
 
-    // Save current ranks as previous for next page load
-    chrome.storage.local.set({ previousPageRanks: currentRanks });
-
-    if (updated) {
-        chrome.storage.local.set({ rankChangedAt, rankDiff });
+    // Update changedAt timestamps: reset to now if diff changed, remove if diff gone
+    for (const id of Object.keys(rankDiff)) {
+        if (!rankDiffChangedAt[id] || rankDiffChangedAt[id].diff !== rankDiff[id]) {
+            rankDiffChangedAt[id] = { diff: rankDiff[id], changedAt: now };
+        }
     }
+    for (const id of Object.keys(rankDiffChangedAt)) {
+        if (!rankDiff[id]) {
+            delete rankDiffChangedAt[id];
+        }
+    }
+
+    chrome.storage.local.set({ rankHistory, rankDiffChangedAt });
+    return rankDiff;
 }
 
-function markNewAndTrendingStories(storyFirstSeen, previousPageRanks, rankChangedAt, rankDiff, seenStories) {
+// Snapshot current page ranks into history and compute diffs against the rolling window.
+function computeRankDiffs(rankHistory, rankDiffChangedAt) {
+    const currentRanks = getPageRanks();
+    rankHistory.push({ timestamp: Date.now(), ranks: currentRanks });
+    return computeRankDiffsFromHistory(rankHistory, currentRanks, rankDiffChangedAt);
+}
+
+function markNewAndTrendingStories(storyFirstSeen, rankHistory, rankDiffChangedAt, seenStories) {
     // Record new stories on the page
     snapshotVisibleStories(storyFirstSeen);
 
-    // Detect rank changes before building indicators
-    detectRankChanges(previousPageRanks, rankChangedAt, rankDiff);
+    // Compute rank diffs from rolling window
+    const rankDiff = computeRankDiffs(rankHistory, rankDiffChangedAt);
 
     // Insert indicator cells into story rows (and fix alignment for other rows)
     const allRows = document.querySelectorAll("tr.athing, tr.athing + tr, tr.spacer");
     allRows.forEach(tr => {
         if (tr.classList.contains("athing")) {
             const entryId = tr.getAttribute("id");
-            const td = buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, seenStories);
+            const td = buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories);
             tr.insertBefore(td, tr.firstChild);
         } else {
             addEmptyIndicatorToRow(tr);
@@ -298,7 +329,7 @@ function markVisibleStoriesAsSeen(seenStories) {
 const INDICATOR_FADE_MS = 30 * 60 * 1000; // 30 minutes
 
 // Build an indicator td for a story row
-function buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
+function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories) {
     const td = document.createElement("td");
     td.className = "hn-mod-indicator-cell";
     td.style.cssText = "width: 24px; text-align: center; vertical-align: middle; padding: 0; line-height: 0;";
@@ -306,13 +337,10 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, se
     if (!entryId) return td;
 
     const now = Date.now();
-    const seenAt = seenStories[entryId]; // timestamp when user first saw this story
+    const seenAt = seenStories[entryId];
 
-    // New story dot — shown if you haven't seen this story yet
-    // On first view, seenAt is not set yet (set after indicators are built)
-    // Fades over 15 min from the moment you first saw it
+    // New story dot — fades over 30 min from when you first saw it
     if (!seenAt) {
-        // First time seeing — full intensity
         const marker = document.createElement("span");
         marker.textContent = "\u2022";
         marker.style.cssText = "color: #ff6600; font-size: 20px; line-height: 10px; font-weight: bold; opacity: 1; display: block;";
@@ -328,28 +356,34 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, se
         }
     }
 
-    // Trend arrow
-    // Fades from max(rankChangedAt, seenAt) — full intensity if change happened
-    // while away, or if it just changed now
-    const changedAt = rankChangedAt[entryId];
+    // Trend arrow — fades over 30 min from when the diff last changed, resets on change
     const diff = rankDiff[entryId];
 
-    if (changedAt && diff) {
-        const fadeStart = Math.max(changedAt, seenAt || now);
-        const trendAge = now - fadeStart;
-        if (trendAge < INDICATOR_FADE_MS) {
-            let trendIndicator = null;
+    if (diff) {
+        let trendIndicator = null;
 
-            if (diff > 0) {
-                trendIndicator = { number: diff, symbol: "\u2b06", color: "#228b22" };
-            } else if (diff < 0) {
-                trendIndicator = { number: Math.abs(diff), symbol: "\u2b07", color: "#999" };
+        if (diff > 0) {
+            trendIndicator = { number: diff, symbol: "\u2b06", color: "#228b22" };
+        } else if (diff < 0) {
+            trendIndicator = { number: Math.abs(diff), symbol: "\u2b07", color: "#999" };
+        }
+
+        if (trendIndicator) {
+            // Compute arrow opacity based on time since diff last changed
+            let arrowOpacity = 1;
+            const changedEntry = rankDiffChangedAt[entryId];
+            if (changedEntry) {
+                const age = now - changedEntry.changedAt;
+                if (age >= INDICATOR_FADE_MS) {
+                    arrowOpacity = 0;
+                } else {
+                    arrowOpacity = 1 - (age / INDICATOR_FADE_MS);
+                }
             }
 
-            if (trendIndicator) {
-                const opacity = 1 - (trendAge / INDICATOR_FADE_MS);
+            if (arrowOpacity > 0) {
                 const marker = document.createElement("span");
-                marker.style.cssText = `color: ${trendIndicator.color}; line-height: 12px; display: block; opacity: ${opacity.toFixed(2)};`;
+                marker.style.cssText = `color: ${trendIndicator.color}; line-height: 12px; display: block; opacity: ${arrowOpacity.toFixed(2)};`;
 
                 const num = document.createElement("span");
                 num.textContent = trendIndicator.number;
@@ -386,13 +420,47 @@ function addEmptyIndicatorToRow(tr) {
 }
 
 // Watch for dynamically added rows (e.g. when hiding a story) and add indicator cells
-function observeNewRows(storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
+function observeNewRows(storyFirstSeen, rankHistory, rankDiffChangedAt, seenStories) {
     const firstStory = document.querySelector("tr.athing");
     if (!firstStory) return;
     const storyTable = firstStory.closest("table");
     if (!storyTable) return;
 
+    // Track which story IDs are currently on the page so we can detect removals
+    let knownStoryIds = new Set(Object.keys(getPageRanks()));
+
     const observer = new MutationObserver(mutations => {
+        const currentRanks = getPageRanks();
+        const currentIds = new Set(Object.keys(currentRanks));
+
+        // Find stories that were removed (hidden) — these cause rank shifts
+        const removedIds = [...knownStoryIds].filter(id => !currentIds.has(id));
+
+        if (removedIds.length > 0) {
+            // For each removed story, adjust all historical snapshots:
+            // remove the hidden story and shift ranks of stories that were below it
+            for (const snapshot of rankHistory) {
+                for (const removedId of removedIds) {
+                    const removedRank = snapshot.ranks[removedId];
+                    if (removedRank !== undefined) {
+                        // Shift up all stories that were ranked below the removed one
+                        for (const id of Object.keys(snapshot.ranks)) {
+                            if (snapshot.ranks[id] > removedRank) {
+                                snapshot.ranks[id]--;
+                            }
+                        }
+                        delete snapshot.ranks[removedId];
+                    }
+                }
+            }
+            chrome.storage.local.set({ rankHistory });
+        }
+
+        knownStoryIds = currentIds;
+
+        // Compute diffs using the corrected history (without adding a new snapshot)
+        const rankDiff = computeRankDiffsFromHistory(rankHistory, currentRanks, rankDiffChangedAt);
+
         for (const mutation of mutations) {
             for (const node of mutation.addedNodes) {
                 if (!node || node.nodeType !== Node.ELEMENT_NODE || node.tagName !== "TR") continue;
@@ -405,7 +473,7 @@ function observeNewRows(storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
                         storyFirstSeen[entryId] = Date.now();
                         chrome.storage.local.set({ storyFirstSeen });
                     }
-                    const td = buildIndicatorCell(entryId, storyFirstSeen, rankChangedAt, rankDiff, seenStories);
+                    const td = buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories);
                     node.insertBefore(td, node.firstChild);
                     // Mark dynamically added stories as seen
                     if (!seenStories[entryId]) {
@@ -417,10 +485,6 @@ function observeNewRows(storyFirstSeen, rankChangedAt, rankDiff, seenStories) {
                 }
             }
         }
-
-        // After any DOM change (hide/unhide), update stored ranks to current page state
-        // so the next page load doesn't see false rank changes
-        chrome.storage.local.set({ previousPageRanks: getPageRanks() });
     });
 
     observer.observe(storyTable, { childList: true, subtree: true });
@@ -443,19 +507,18 @@ chrome.storage.sync.get(
 
         // Load snapshot data and mark new/trending stories
         chrome.storage.local.get(
-            { storyFirstSeen: {}, previousPageRanks: {}, rankChangedAt: {}, rankDiff: {}, seenStories: {} },
+            { storyFirstSeen: {}, rankHistory: [], rankDiffChangedAt: {}, seenStories: {} },
             (localItems) => {
                 markNewAndTrendingStories(
                     localItems.storyFirstSeen,
-                    localItems.previousPageRanks,
-                    localItems.rankChangedAt,
-                    localItems.rankDiff,
+                    localItems.rankHistory,
+                    localItems.rankDiffChangedAt,
                     localItems.seenStories
                 );
                 observeNewRows(
                     localItems.storyFirstSeen,
-                    localItems.rankChangedAt,
-                    localItems.rankDiff,
+                    localItems.rankHistory,
+                    localItems.rankDiffChangedAt,
                     localItems.seenStories
                 );
             }
