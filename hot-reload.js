@@ -1,5 +1,3 @@
-importScripts('background.js');
-
 // Only reload tabs on actual extension install/update, not on every service worker wake-up
 chrome.runtime.onInstalled.addListener(() => {
     chrome.management.getSelf().then(self => {

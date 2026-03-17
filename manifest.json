@@ -4,11 +4,10 @@
   "version": "1.1",
   "description": "Chrome extension for customizing Hacker News.",
   "permissions": [
-    "activeTab", "storage", "alarms"
+    "activeTab", "storage"
   ],
   "host_permissions": [
-    "https://news.ycombinator.com/*",
-    "https://hacker-news.firebaseio.com/*"
+    "https://news.ycombinator.com/*"
   ],
   "background": {
     "service_worker": "hot-reload.js"

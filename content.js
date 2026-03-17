@@ -195,110 +195,73 @@ function colorizePoints() {
 
 // --- "What's New" feature ---
 
-// Record firstSeen for any stories on the page not already tracked
-function snapshotVisibleStories(storyFirstSeen) {
-    const now = Date.now();
-    const titleRows = document.querySelectorAll(".athing");
-    let updated = false;
-
-    titleRows.forEach(trTitle => {
-        const entryId = trTitle.getAttribute("id");
-        if (entryId && !storyFirstSeen[entryId]) {
-            storyFirstSeen[entryId] = now;
-            updated = true;
-        }
-    });
-
-    if (updated) {
-        chrome.storage.local.set({ storyFirstSeen });
-        // Trigger a background snapshot to update API ranks
-        chrome.runtime.sendMessage({ type: "takeSnapshot" });
-    }
+function isFrontPage() {
+    const path = window.location.pathname;
+    return path === "/" || path === "/news";
 }
 
-const RANK_WINDOW_MS = 30 * 60 * 1000; // 30 minute rolling window
-const RANK_HISTORY_MAX_AGE_MS = 35 * 60 * 1000; // prune entries older than 35 min
-
-// Get current page ranks (1-based position) for each story
+// Get current page ranks from the displayed rank numbers (works across all pages)
 function getPageRanks() {
     const ranks = {};
     const titleRows = document.querySelectorAll(".athing");
-    titleRows.forEach((trTitle, index) => {
+    titleRows.forEach(trTitle => {
         const entryId = trTitle.getAttribute("id");
-        if (entryId) {
-            ranks[entryId] = index + 1;
+        const rankEl = trTitle.querySelector("span.rank");
+        if (entryId && rankEl) {
+            const rank = parseInt(rankEl.textContent);
+            if (!isNaN(rank)) {
+                ranks[entryId] = rank;
+            }
         }
     });
     return ranks;
 }
 
-// Compute rank diffs given current ranks against the rolling window baseline.
-// Updates rankDiffChangedAt to track when each story's diff last changed (for fading).
-// Does NOT push a new snapshot — caller is responsible for that.
-function computeRankDiffsFromHistory(rankHistory, currentRanks, rankDiffChangedAt) {
+// Compare current page ranks to previously seen ranks (single flat map across all pages).
+// If a story's diff changed, reset changedAt to now (full intensity).
+// If unchanged, keep existing changedAt so it fades over time.
+function computeRankDiffs(previousPageRanks, rankDiffChangedAt) {
+    const currentRanks = getPageRanks();
     const now = Date.now();
 
-    // Prune entries older than 35 minutes
-    while (rankHistory.length > 0 && (now - rankHistory[0].timestamp) > RANK_HISTORY_MAX_AGE_MS) {
-        rankHistory.shift();
-    }
-
-    // Find the oldest entry that's at least ~30 minutes old
-    // If none is old enough, use the oldest available
-    let baseline = rankHistory[0];
-    for (const entry of rankHistory) {
-        if ((now - entry.timestamp) >= RANK_WINDOW_MS) {
-            baseline = entry;
-            break;
-        }
-    }
-
-    // Compute diffs against baseline
-    const rankDiff = {};
-    if (baseline && baseline.timestamp !== now) {
-        for (const id of Object.keys(currentRanks)) {
-            if (baseline.ranks[id] !== undefined && baseline.ranks[id] !== currentRanks[id]) {
-                rankDiff[id] = baseline.ranks[id] - currentRanks[id]; // positive = moved up
+    for (const id of Object.keys(currentRanks)) {
+        if (previousPageRanks[id] !== undefined && previousPageRanks[id] !== currentRanks[id]) {
+            const diff = previousPageRanks[id] - currentRanks[id]; // positive = moved up
+            if (!rankDiffChangedAt[id] || rankDiffChangedAt[id].diff !== diff) {
+                rankDiffChangedAt[id] = { diff, changedAt: now };
             }
         }
+        // Update this story's rank in the map (merge, don't replace)
+        previousPageRanks[id] = currentRanks[id];
     }
 
-    // Update changedAt timestamps: reset to now if diff changed, remove if diff gone
-    for (const id of Object.keys(rankDiff)) {
-        if (!rankDiffChangedAt[id] || rankDiffChangedAt[id].diff !== rankDiff[id]) {
-            rankDiffChangedAt[id] = { diff: rankDiff[id], changedAt: now };
-        }
-    }
+    // Clean up fully faded entries (>30 min)
     for (const id of Object.keys(rankDiffChangedAt)) {
-        if (!rankDiff[id]) {
+        if ((now - rankDiffChangedAt[id].changedAt) >= INDICATOR_FADE_MS) {
             delete rankDiffChangedAt[id];
         }
     }
 
-    chrome.storage.local.set({ rankHistory, rankDiffChangedAt });
-    return rankDiff;
+    chrome.storage.local.set({ previousPageRanks, rankDiffChangedAt });
 }
 
-// Snapshot current page ranks into history and compute diffs against the rolling window.
-function computeRankDiffs(rankHistory, rankDiffChangedAt) {
-    const currentRanks = getPageRanks();
-    rankHistory.push({ timestamp: Date.now(), ranks: currentRanks });
-    return computeRankDiffsFromHistory(rankHistory, currentRanks, rankDiffChangedAt);
-}
+function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, seenStories) {
+    const frontPage = isFrontPage();
 
-function markNewAndTrendingStories(storyFirstSeen, rankHistory, rankDiffChangedAt, seenStories) {
-    // Record new stories on the page
-    snapshotVisibleStories(storyFirstSeen);
+    // Only compute/update rank diffs on front pages
+    if (frontPage) {
+        computeRankDiffs(previousPageRanks, rankDiffChangedAt);
+    }
 
-    // Compute rank diffs from rolling window
-    const rankDiff = computeRankDiffs(rankHistory, rankDiffChangedAt);
+    // Freeze render time so indicators don't keep fading while the tab is open
+    const renderTime = Date.now();
 
     // Insert indicator cells into story rows (and fix alignment for other rows)
     const allRows = document.querySelectorAll("tr.athing, tr.athing + tr, tr.spacer");
     allRows.forEach(tr => {
         if (tr.classList.contains("athing")) {
             const entryId = tr.getAttribute("id");
-            const td = buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories);
+            const td = buildIndicatorCell(entryId, frontPage ? rankDiffChangedAt : {}, seenStories, renderTime);
             tr.insertBefore(td, tr.firstChild);
         } else {
             addEmptyIndicatorToRow(tr);
@@ -329,14 +292,14 @@ function markVisibleStoriesAsSeen(seenStories) {
 const INDICATOR_FADE_MS = 30 * 60 * 1000; // 30 minutes
 
 // Build an indicator td for a story row
-function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories) {
+function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTime) {
     const td = document.createElement("td");
     td.className = "hn-mod-indicator-cell";
     td.style.cssText = "min-width: 30px; text-align: right; vertical-align: middle; padding: 0 2px 0 0; white-space: nowrap;";
 
     if (!entryId) return td;
 
-    const now = Date.now();
+    const now = renderTime;
     const seenAt = seenStories[entryId];
 
     // Compute dot opacity — fades over 30 min from when you first saw it
@@ -351,10 +314,11 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt
     }
 
     // Trend arrow — fades over 30 min from when the diff last changed, resets on change
-    const diff = rankDiff[entryId];
+    const changedEntry = rankDiffChangedAt[entryId];
     let hasArrow = false;
 
-    if (diff) {
+    if (changedEntry) {
+        const diff = changedEntry.diff;
         let trendIndicator = null;
 
         if (diff > 0) {
@@ -364,15 +328,12 @@ function buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt
         }
 
         if (trendIndicator) {
+            const age = now - changedEntry.changedAt;
             let arrowOpacity = 1;
-            const changedEntry = rankDiffChangedAt[entryId];
-            if (changedEntry) {
-                const age = now - changedEntry.changedAt;
-                if (age >= INDICATOR_FADE_MS) {
-                    arrowOpacity = 0;
-                } else {
-                    arrowOpacity = 1 - (age / INDICATOR_FADE_MS);
-                }
+            if (age >= INDICATOR_FADE_MS) {
+                arrowOpacity = 0;
+            } else {
+                arrowOpacity = 1 - (age / INDICATOR_FADE_MS);
             }
 
             if (arrowOpacity > 0) {
@@ -425,46 +386,16 @@ function addEmptyIndicatorToRow(tr) {
 }
 
 // Watch for dynamically added rows (e.g. when hiding a story) and add indicator cells
-function observeNewRows(storyFirstSeen, rankHistory, rankDiffChangedAt, seenStories) {
+function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories) {
     const firstStory = document.querySelector("tr.athing");
     if (!firstStory) return;
     const storyTable = firstStory.closest("table");
     if (!storyTable) return;
 
-    // Track which story IDs are currently on the page so we can detect removals
     let knownStoryIds = new Set(Object.keys(getPageRanks()));
 
     const observer = new MutationObserver(mutations => {
-        const currentRanks = getPageRanks();
-        const currentIds = new Set(Object.keys(currentRanks));
-
-        // Find stories that were removed (hidden) — these cause rank shifts
-        const removedIds = [...knownStoryIds].filter(id => !currentIds.has(id));
-
-        if (removedIds.length > 0) {
-            // For each removed story, adjust all historical snapshots:
-            // remove the hidden story and shift ranks of stories that were below it
-            for (const snapshot of rankHistory) {
-                for (const removedId of removedIds) {
-                    const removedRank = snapshot.ranks[removedId];
-                    if (removedRank !== undefined) {
-                        // Shift up all stories that were ranked below the removed one
-                        for (const id of Object.keys(snapshot.ranks)) {
-                            if (snapshot.ranks[id] > removedRank) {
-                                snapshot.ranks[id]--;
-                            }
-                        }
-                        delete snapshot.ranks[removedId];
-                    }
-                }
-            }
-            chrome.storage.local.set({ rankHistory });
-        }
-
-        knownStoryIds = currentIds;
-
-        // Compute diffs using the corrected history (without adding a new snapshot)
-        const rankDiff = computeRankDiffsFromHistory(rankHistory, currentRanks, rankDiffChangedAt);
+        const renderTime = Date.now();
 
         for (const mutation of mutations) {
             for (const node of mutation.addedNodes) {
@@ -473,15 +404,9 @@ function observeNewRows(storyFirstSeen, rankHistory, rankDiffChangedAt, seenStor
 
                 if (node.classList.contains("athing")) {
                     const entryId = node.getAttribute("id");
-                    // Record firstSeen for this story if not already tracked
-                    if (entryId && !storyFirstSeen[entryId]) {
-                        storyFirstSeen[entryId] = Date.now();
-                        chrome.storage.local.set({ storyFirstSeen });
-                    }
-                    const td = buildIndicatorCell(entryId, storyFirstSeen, rankDiff, rankDiffChangedAt, seenStories);
+                    const td = buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTime);
                     node.insertBefore(td, node.firstChild);
-                    // Mark dynamically added stories as seen
-                    if (!seenStories[entryId]) {
+                    if (entryId && !seenStories[entryId]) {
                         seenStories[entryId] = Date.now();
                         chrome.storage.local.set({ seenStories });
                     }
@@ -489,6 +414,37 @@ function observeNewRows(storyFirstSeen, rankHistory, rankDiffChangedAt, seenStor
                     addEmptyIndicatorToRow(node);
                 }
             }
+        }
+
+        // Only update rank tracking on front pages
+        if (isFrontPage()) {
+            const currentIds = new Set(Object.keys(getPageRanks()));
+            const removedIds = [...knownStoryIds].filter(id => !currentIds.has(id));
+
+            // Adjust previousPageRanks for hidden stories so hiding
+            // doesn't cause false rank diffs on other pages
+            if (removedIds.length > 0) {
+                for (const removedId of removedIds) {
+                    const removedRank = previousPageRanks[removedId];
+                    if (removedRank !== undefined) {
+                        for (const id of Object.keys(previousPageRanks)) {
+                            if (previousPageRanks[id] > removedRank) {
+                                previousPageRanks[id]--;
+                            }
+                        }
+                        delete previousPageRanks[removedId];
+                    }
+                }
+            }
+
+            // Merge current page ranks
+            const currentRanks = getPageRanks();
+            for (const id of Object.keys(currentRanks)) {
+                previousPageRanks[id] = currentRanks[id];
+            }
+
+            knownStoryIds = currentIds;
+            chrome.storage.local.set({ previousPageRanks });
         }
     });
 
@@ -512,17 +468,15 @@ chrome.storage.sync.get(
 
         // Load snapshot data and mark new/trending stories
         chrome.storage.local.get(
-            { storyFirstSeen: {}, rankHistory: [], rankDiffChangedAt: {}, seenStories: {} },
+            { previousPageRanks: {}, rankDiffChangedAt: {}, seenStories: {} },
             (localItems) => {
                 markNewAndTrendingStories(
-                    localItems.storyFirstSeen,
-                    localItems.rankHistory,
+                    localItems.previousPageRanks,
                     localItems.rankDiffChangedAt,
                     localItems.seenStories
                 );
                 observeNewRows(
-                    localItems.storyFirstSeen,
-                    localItems.rankHistory,
+                    localItems.previousPageRanks,
                     localItems.rankDiffChangedAt,
                     localItems.seenStories
                 );
