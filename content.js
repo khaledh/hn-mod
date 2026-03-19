@@ -62,6 +62,7 @@ function adjustTitlesAndPersistDimming() {
             if (isDimming && dimmedIndex === -1) {
                 // not found, add it
                 DIMMED_ENTRIES.push(entryId);
+                capEntries(DIMMED_ENTRIES);
             } else if (!isDimming && dimmedIndex !== -1) {
                 // found, remove it
                 DIMMED_ENTRIES.splice(dimmedIndex, 1);
@@ -73,6 +74,7 @@ function adjustTitlesAndPersistDimming() {
             if (!isDimming && undimmedIndex === -1) {
                 // not found, add it
                 UNDIMMED_ENTRIES.push(entryId);
+                capEntries(UNDIMMED_ENTRIES);
             } else if (isDimming && undimmedIndex !== -1) {
                 // found, remove it
                 UNDIMMED_ENTRIES.splice(undimmedIndex, 1);
@@ -220,32 +222,58 @@ function getPageRanks() {
 // Compare current page ranks to previously seen ranks (single flat map across all pages).
 // If a story's diff changed, reset changedAt to now (full intensity).
 // If unchanged, keep existing changedAt so it fades over time.
+// rankDiffChangedAt uses compact keys: {d: diff, t: timestamp_in_seconds}
 function computeRankDiffs(previousPageRanks, rankDiffChangedAt) {
     const currentRanks = getPageRanks();
-    const now = Date.now();
+    const nowSec = Math.floor(Date.now() / 1000);
 
     for (const id of Object.keys(currentRanks)) {
         if (previousPageRanks[id] !== undefined && previousPageRanks[id] !== currentRanks[id]) {
             const diff = previousPageRanks[id] - currentRanks[id]; // positive = moved up
-            if (!rankDiffChangedAt[id] || rankDiffChangedAt[id].diff !== diff) {
-                rankDiffChangedAt[id] = { diff, changedAt: now };
+            if (!rankDiffChangedAt[id] || rankDiffChangedAt[id].d !== diff) {
+                rankDiffChangedAt[id] = { d: diff, t: nowSec };
             }
         }
-        // Update this story's rank in the map (merge, don't replace)
         previousPageRanks[id] = currentRanks[id];
     }
 
     // Clean up fully faded entries (>30 min)
+    const fadeSec = INDICATOR_FADE_MS / 1000;
     for (const id of Object.keys(rankDiffChangedAt)) {
-        if ((now - rankDiffChangedAt[id].changedAt) >= INDICATOR_FADE_MS) {
+        if ((nowSec - rankDiffChangedAt[id].t) >= fadeSec) {
             delete rankDiffChangedAt[id];
         }
     }
 
-    chrome.storage.local.set({ previousPageRanks, rankDiffChangedAt });
+    // Cap previousPageRanks to 500, keeping the lowest-ranked entries
+    const rankEntries = Object.entries(previousPageRanks);
+    if (rankEntries.length > MAX_SEEN_STORIES) {
+        rankEntries.sort((a, b) => a[1] - b[1]);
+        for (const [id] of rankEntries.slice(MAX_SEEN_STORIES)) {
+            delete previousPageRanks[id];
+        }
+    }
+
+    // Cap rankDiffChangedAt to 500, removing oldest
+    const diffEntries = Object.entries(rankDiffChangedAt);
+    if (diffEntries.length > MAX_SEEN_STORIES) {
+        diffEntries.sort((a, b) => a[1].t - b[1].t);
+        for (const [id] of diffEntries.slice(0, diffEntries.length - MAX_SEEN_STORIES)) {
+            delete rankDiffChangedAt[id];
+        }
+    }
+
+    chrome.storage.sync.set({ previousPageRanks });
+    saveRankDiffs(rankDiffChangedAt);
+}
+
+function isListingPage() {
+    return window.location.pathname !== "/item";
 }
 
 function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, seenStories) {
+    if (!isListingPage()) return;
+
     const frontPage = isFrontPage();
 
     // Only compute/update rank diffs on front pages
@@ -272,20 +300,29 @@ function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, seenSto
     markVisibleStoriesAsSeen(seenStories);
 }
 
-// Mark visible stories as seen, storing the timestamp of first viewing
+// Mark visible stories as seen, storing the timestamp (seconds) of first viewing
 function markVisibleStoriesAsSeen(seenStories) {
     const titleRows = document.querySelectorAll(".athing");
-    const now = Date.now();
+    const nowSec = Math.floor(Date.now() / 1000);
     let updated = false;
     titleRows.forEach(trTitle => {
         const entryId = trTitle.getAttribute("id");
         if (entryId && !seenStories[entryId]) {
-            seenStories[entryId] = now;
+            seenStories[entryId] = nowSec;
             updated = true;
         }
     });
     if (updated) {
-        chrome.storage.local.set({ seenStories });
+        // Cap to 500 entries, removing oldest first
+        const entries = Object.entries(seenStories);
+        if (entries.length > MAX_SEEN_STORIES) {
+            entries.sort((a, b) => a[1] - b[1]); // sort by timestamp ascending
+            const toRemove = entries.slice(0, entries.length - MAX_SEEN_STORIES);
+            for (const [id] of toRemove) {
+                delete seenStories[id];
+            }
+        }
+        saveSeenStories(seenStories);
     }
 }
 
@@ -299,17 +336,18 @@ function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTime)
 
     if (!entryId) return td;
 
-    const now = renderTime;
+    const nowSec = Math.floor(renderTime / 1000);
+    const fadeSec = INDICATOR_FADE_MS / 1000;
     const seenAt = seenStories[entryId];
 
-    // Compute dot opacity — fades over 30 min from when you first saw it
+    // Compute dot opacity — exponential decay from when you first saw it
     let dotOpacity = 0;
     if (!seenAt) {
         dotOpacity = 1;
     } else {
-        const dotAge = now - seenAt;
-        if (dotAge < INDICATOR_FADE_MS) {
-            dotOpacity = 1 - (dotAge / INDICATOR_FADE_MS);
+        const dotAge = nowSec - seenAt;
+        if (dotAge < fadeSec) {
+            dotOpacity = Math.exp(-3 * dotAge / fadeSec);
         }
     }
 
@@ -318,7 +356,7 @@ function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTime)
     let hasArrow = false;
 
     if (changedEntry) {
-        const diff = changedEntry.diff;
+        const diff = changedEntry.d;
         let trendIndicator = null;
 
         if (diff > 0) {
@@ -328,13 +366,8 @@ function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTime)
         }
 
         if (trendIndicator) {
-            const age = now - changedEntry.changedAt;
-            let arrowOpacity = 1;
-            if (age >= INDICATOR_FADE_MS) {
-                arrowOpacity = 0;
-            } else {
-                arrowOpacity = 1 - (age / INDICATOR_FADE_MS);
-            }
+            const age = nowSec - changedEntry.t;
+            let arrowOpacity = age >= fadeSec ? 0 : Math.exp(-3 * age / fadeSec);
 
             if (arrowOpacity > 0) {
                 hasArrow = true;
@@ -407,8 +440,8 @@ function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories) {
                     const td = buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTime);
                     node.insertBefore(td, node.firstChild);
                     if (entryId && !seenStories[entryId]) {
-                        seenStories[entryId] = Date.now();
-                        chrome.storage.local.set({ seenStories });
+                        seenStories[entryId] = Math.floor(Date.now() / 1000);
+                        saveSeenStories(seenStories);
                     }
                 } else {
                     addEmptyIndicatorToRow(node);
@@ -444,7 +477,7 @@ function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories) {
             }
 
             knownStoryIds = currentIds;
-            chrome.storage.local.set({ previousPageRanks });
+            chrome.storage.sync.set({ previousPageRanks });
         }
     });
 
@@ -453,34 +486,117 @@ function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories) {
 
 // --- Initialization ---
 
-// Load sync storage (keywords/dimming) and local storage (snapshots/visits) in parallel
+const PRUNE_AGE_MS = 72 * 60 * 60 * 1000; // 72 hours
+
+function pruneOldEntries(seenStories, previousPageRanks) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const pruneAgeSec = PRUNE_AGE_MS / 1000;
+    for (const id of Object.keys(seenStories)) {
+        if (nowSec - seenStories[id] > pruneAgeSec) {
+            delete seenStories[id];
+            delete previousPageRanks[id];
+        }
+    }
+}
+
+const MAX_DIMMED_ENTRIES = 500;
+const MAX_SEEN_STORIES = 500;
+
+// seenStories storage format: { timestamp: [id, id, ...], ... } (compact)
+// seenStories in-memory format: { id: timestamp, ... } (flat, for fast lookup)
+function expandSeenStories(compact) {
+    const flat = {};
+    for (const [ts, ids] of Object.entries(compact)) {
+        const t = parseInt(ts);
+        for (const id of ids) {
+            flat[id] = t;
+        }
+    }
+    return flat;
+}
+
+function compactSeenStories(flat) {
+    const grouped = {};
+    for (const [id, ts] of Object.entries(flat)) {
+        const key = String(ts);
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(id);
+    }
+    return grouped;
+}
+
+function saveSeenStories(seenStories) {
+    chrome.storage.sync.set({ seenStories: compactSeenStories(seenStories) });
+}
+
+// rankDiffChangedAt storage format: { "diff,timestamp": [id, ...], ... } (compact)
+// rankDiffChangedAt in-memory format: { id: {d: diff, t: timestamp}, ... } (flat)
+function expandRankDiffs(compact) {
+    const flat = {};
+    for (const [key, ids] of Object.entries(compact)) {
+        const [d, t] = key.split(",").map(Number);
+        for (const id of ids) {
+            flat[id] = { d, t };
+        }
+    }
+    return flat;
+}
+
+function compactRankDiffs(flat) {
+    const grouped = {};
+    for (const [id, entry] of Object.entries(flat)) {
+        const key = `${entry.d},${entry.t}`;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(id);
+    }
+    return grouped;
+}
+
+function saveRankDiffs(rankDiffChangedAt) {
+    chrome.storage.sync.set({ rankDiffChangedAt: compactRankDiffs(rankDiffChangedAt) });
+}
+
+function capEntries(arr) {
+    if (arr.length > MAX_DIMMED_ENTRIES) {
+        arr.splice(0, arr.length - MAX_DIMMED_ENTRIES);
+    }
+}
+
+// Load all data from sync storage
 chrome.storage.sync.get(
-    { ciKeywords: [], csKeywords: [], domains: [], dimmedEntries: [], undimmedEntries: [] },
-    (syncItems) => {
-        CI_KEYWORDS = syncItems.ciKeywords;
-        CS_KEYWORDS = syncItems.csKeywords;
-        DOMAINS = syncItems.domains;
-        DIMMED_ENTRIES = syncItems.dimmedEntries;
-        UNDIMMED_ENTRIES = syncItems.undimmedEntries;
+    {
+        ciKeywords: [], csKeywords: [], domains: [],
+        dimmedEntries: [], undimmedEntries: [],
+        previousPageRanks: {}, rankDiffChangedAt: {}, seenStories: {}
+    },
+    (items) => {
+        CI_KEYWORDS = items.ciKeywords;
+        CS_KEYWORDS = items.csKeywords;
+        DOMAINS = items.domains;
+        DIMMED_ENTRIES = items.dimmedEntries;
+        UNDIMMED_ENTRIES = items.undimmedEntries;
+
+        // Expand compact formats to flat lookups
+        const seenStories = expandSeenStories(items.seenStories);
+        const rankDiffChangedAt = expandRankDiffs(items.rankDiffChangedAt);
+
+        // Cap dimmed/undimmed lists and prune old tracking data
+        capEntries(DIMMED_ENTRIES);
+        capEntries(UNDIMMED_ENTRIES);
+        pruneOldEntries(seenStories, items.previousPageRanks);
 
         adjustTitlesAndPersistDimming();
         colorizePoints();
 
-        // Load snapshot data and mark new/trending stories
-        chrome.storage.local.get(
-            { previousPageRanks: {}, rankDiffChangedAt: {}, seenStories: {} },
-            (localItems) => {
-                markNewAndTrendingStories(
-                    localItems.previousPageRanks,
-                    localItems.rankDiffChangedAt,
-                    localItems.seenStories
-                );
-                observeNewRows(
-                    localItems.previousPageRanks,
-                    localItems.rankDiffChangedAt,
-                    localItems.seenStories
-                );
-            }
+        markNewAndTrendingStories(
+            items.previousPageRanks,
+            rankDiffChangedAt,
+            seenStories
+        );
+        observeNewRows(
+            items.previousPageRanks,
+            rankDiffChangedAt,
+            seenStories
         );
     }
 );

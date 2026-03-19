@@ -45,7 +45,7 @@ const restoreOptions = () => {
 };
 
 const resetTracking = () => {
-  chrome.storage.local.remove(
+  chrome.storage.sync.remove(
     ['previousPageRanks', 'rankDiffChangedAt', 'seenStories'],
     () => {
       const status = document.getElementById('reset-status');
