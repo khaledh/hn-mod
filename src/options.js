@@ -1,14 +1,12 @@
-// Saves options to chrome.storage
 const saveOptions = () => {
-  const ci_keywords = document.getElementById('ci-keywords').value;
-  console.log(ci_keywords);
-  const cs_keywords = document.getElementById('cs-keywords').value;
-  const ci_domains = document.getElementById('domains').value;
+  const ciKeywords = document.getElementById('ci-keywords').value;
+  const csKeywords = document.getElementById('cs-keywords').value;
+  const domains = document.getElementById('domains').value;
 
   chrome.storage.sync.set({
-      ciKeywords: JSON.parse(ci_keywords),
-      csKeywords: JSON.parse(cs_keywords),
-      domains: JSON.parse(ci_domains)
+      ciKeywords: JSON.parse(ciKeywords),
+      csKeywords: JSON.parse(csKeywords),
+      domains: JSON.parse(domains),
     },
     () => {
       // Update status to let user know options were saved.
@@ -26,17 +24,10 @@ const saveOptions = () => {
   );
 };
 
-// Restores select box and checkbox state using the preferences
-// stored in chrome.storage.
 const restoreOptions = () => {
   chrome.storage.sync.get(
     { ciKeywords: [], csKeywords: [], domains: [] },
     (items) => {
-      console.log(items);
-      CI_KEYWORDS = items.ciKeywords;
-      CS_KEYWORDS = items.csKeywords;
-      DOMAINS = items.domains;
-
       document.getElementById('ci-keywords').value = JSON.stringify(items.ciKeywords);
       document.getElementById('cs-keywords').value = JSON.stringify(items.csKeywords);
       document.getElementById('domains').value = JSON.stringify(items.domains);

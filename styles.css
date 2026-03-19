@@ -2,3 +2,24 @@
 tr.athing > td {
     vertical-align: middle !important;
 }
+
+/* Indicator cell (new-story dot + trend arrow column) */
+.hn-mod-indicator-cell {
+    min-width: 30px;
+    text-align: right;
+    vertical-align: middle;
+    padding: 0 2px 0 0;
+    white-space: nowrap;
+}
+
+/* New-story dot */
+.hn-mod-dot {
+    color: #ff6600;
+    font-size: 14px;
+    font-weight: bold;
+    vertical-align: middle;
+    margin-right: 3px;
+}
+.hn-mod-dot.has-arrow {
+    margin-left: 3px;
+}
