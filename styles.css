@@ -15,9 +15,9 @@ tr.athing > td {
 /* New-story dot */
 .hn-mod-dot {
     color: #ff6600;
-    font-size: 14px;
     font-weight: bold;
     vertical-align: middle;
+    line-height: 0;
     margin-right: 3px;
 }
 .hn-mod-dot.has-arrow {

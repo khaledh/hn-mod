@@ -103,6 +103,7 @@ function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeS
   dot.className = 'hn-mod-dot';
   if (hasArrow) dot.classList.add('has-arrow');
   dot.style.opacity = (dotOpacity > 0 ? dotOpacity : 0).toFixed(2);
+  dot.style.fontSize = `${(12 + 4 * dotOpacity).toFixed(1)}px`;
   td.appendChild(dot);
 
   return td;
