@@ -1,6 +1,12 @@
 // Options page — tabbed interface
 
-const state = {
+interface OptionsState {
+  ci: string[];
+  cs: string[];
+  domains: string[];
+}
+
+const state: OptionsState = {
   ci: [], // case-insensitive keywords
   cs: [], // case-sensitive keywords
   domains: [], // domains
@@ -8,22 +14,22 @@ const state = {
 
 // --- Tab switching ---
 
-function setupTabs() {
-  const tabs = document.querySelectorAll('.tab');
+function setupTabs(): void {
+  const tabs = document.querySelectorAll<HTMLElement>('.tab');
   tabs.forEach((tab) => {
     tab.addEventListener('click', () => {
       tabs.forEach((t) => t.classList.remove('active'));
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
       tab.classList.add('active');
-      document.getElementById(`panel-${tab.dataset.panel}`).classList.add('active');
+      document.getElementById(`panel-${tab.dataset.panel}`)!.classList.add('active');
     });
   });
 }
 
 // --- Tag rendering ---
 
-function renderTags(key, containerId) {
-  const container = document.getElementById(containerId);
+function renderTags(key: keyof OptionsState, containerId: string): void {
+  const container = document.getElementById(containerId)!;
   container.innerHTML = '';
   for (const value of state[key]) {
     const tag = document.createElement('span');
@@ -43,8 +49,8 @@ function renderTags(key, containerId) {
   }
 }
 
-function addTag(key, inputId, containerId) {
-  const input = document.getElementById(inputId);
+function addTag(key: keyof OptionsState, inputId: string, containerId: string): void {
+  const input = document.getElementById(inputId) as HTMLInputElement;
   const value = input.value.trim();
   if (!value || state[key].includes(value)) {
     input.value = '';
@@ -55,10 +61,10 @@ function addTag(key, inputId, containerId) {
   renderTags(key, containerId);
 }
 
-function setupTagInput(key, inputId, containerId) {
-  const input = document.getElementById(inputId);
-  const btn = input.nextElementSibling;
-  input.addEventListener('keydown', (e) => {
+function setupTagInput(key: keyof OptionsState, inputId: string, containerId: string): void {
+  const input = document.getElementById(inputId)!;
+  const btn = input.nextElementSibling as HTMLElement;
+  input.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       addTag(key, inputId, containerId);
@@ -69,23 +75,25 @@ function setupTagInput(key, inputId, containerId) {
 
 // --- Helpers ---
 
-function showStatus(id, message, duration = 1500) {
-  const el = document.getElementById(id);
+function showStatus(id: string, message: string, duration = 1500): void {
+  const el = document.getElementById(id)!;
   el.textContent = message;
   setTimeout(() => {
     el.textContent = '';
   }, duration);
 }
 
-function reloadHNTabs() {
+function reloadHNTabs(): void {
   chrome.tabs.query({ url: 'https://news.ycombinator.com/*' }, (tabs) => {
-    tabs.forEach((tab) => chrome.tabs.reload(tab.id));
+    for (const tab of tabs) {
+      if (tab.id !== undefined) chrome.tabs.reload(tab.id);
+    }
   });
 }
 
 // --- Save / Load ---
 
-function saveDimming() {
+function saveDimming(): void {
   chrome.storage.sync.set(
     {
       ciKeywords: state.ci,
@@ -99,10 +107,10 @@ function saveDimming() {
   );
 }
 
-function saveNewStories() {
+function saveNewStories(): void {
   chrome.storage.sync.set(
     {
-      showUnseen: document.getElementById('show-unseen').checked,
+      showUnseen: (document.getElementById('show-unseen') as HTMLInputElement).checked,
     },
     () => {
       showStatus('new-stories-status', 'Saved');
@@ -111,11 +119,20 @@ function saveNewStories() {
   );
 }
 
-function restoreOptions() {
+interface OptionsStorage {
+  ciKeywords: string[];
+  csKeywords: string[];
+  domains: string[];
+  showUnseen: boolean;
+}
+
+function restoreOptions(): void {
   chrome.storage.sync.get(
     { ciKeywords: [], csKeywords: [], domains: [], showUnseen: true },
-    (items) => {
-      document.getElementById('show-unseen').checked = items.showUnseen;
+    (data) => {
+      // chrome.storage.sync.get returns { [key: string]: unknown }; we know the shape from defaults
+      const items = data as unknown as OptionsStorage;
+      (document.getElementById('show-unseen') as HTMLInputElement).checked = items.showUnseen;
       state.ci = items.ciKeywords;
       state.cs = items.csKeywords;
       state.domains = items.domains;
@@ -126,7 +143,7 @@ function restoreOptions() {
   );
 }
 
-function resetTracking() {
+function resetTracking(): void {
   if (!confirm('Reset all tracking data? This cannot be undone.')) return;
   chrome.storage.sync.remove(
     [
@@ -150,9 +167,9 @@ function resetTracking() {
 
 // --- Storage stats ---
 
-function loadStorageStats() {
+function loadStorageStats(): void {
   chrome.storage.sync.get(null, (items) => {
-    const container = document.getElementById('storage-stats');
+    const container = document.getElementById('storage-stats')!;
     container.innerHTML = '';
 
     const dimmingKeys = ['ciKeywords', 'csKeywords', 'domains', 'dimmedEntries', 'undimmedEntries'];
@@ -162,14 +179,17 @@ function loadStorageStats() {
 
     let totalBytes = 0;
 
-    function entryCount(val) {
+    function entryCount(val: unknown): number | null {
       if (Array.isArray(val)) return val.length;
       if (typeof val === 'object' && val !== null)
-        return Object.values(val).reduce((sum, v) => sum + (Array.isArray(v) ? v.length : 1), 0);
+        return Object.values(val).reduce(
+          (sum: number, v) => sum + (Array.isArray(v) ? v.length : 1),
+          0,
+        );
       return null;
     }
 
-    function buildTable(label, keyList) {
+    function buildTable(label: string, keyList: string[]): void {
       const heading = document.createElement('h3');
       heading.textContent = label;
       heading.style.cssText = 'font-size: 10pt; color: #333; margin: 12px 0 4px;';
@@ -206,7 +226,10 @@ function loadStorageStats() {
     const totalTable = document.createElement('table');
     totalTable.className = 'stats-table';
     const tfoot = document.createElement('tbody');
-    tfoot.innerHTML = `<tr><td colspan="2"><strong>Total</strong></td><td class="val"><strong>${totalBytes.toLocaleString()} / 102,400</strong></td></tr>`;
+    const totalStr = `${totalBytes.toLocaleString()} / 102,400`;
+    tfoot.innerHTML =
+      `<tr><td colspan="2"><strong>Total</strong></td>` +
+      `<td class="val"><strong>${totalStr}</strong></td></tr>`;
     totalTable.appendChild(tfoot);
     totalTable.style.marginTop = '12px';
     container.appendChild(totalTable);
@@ -224,6 +247,6 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStorageStats();
 });
 
-document.getElementById('save').addEventListener('click', saveDimming);
-document.getElementById('save-new-stories').addEventListener('click', saveNewStories);
-document.getElementById('reset-tracking').addEventListener('click', resetTracking);
+document.getElementById('save')!.addEventListener('click', saveDimming);
+document.getElementById('save-new-stories')!.addEventListener('click', saveNewStories);
+document.getElementById('reset-tracking')!.addEventListener('click', resetTracking);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { intensity } from '../src/colorize.js';
+import { intensity } from '../src/colorize.ts';
 
 describe('intensity', () => {
   it('returns 0 for zero or negative values', () => {

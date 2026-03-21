@@ -4,8 +4,8 @@
 // Trend arrows show rank changes vs previous page load, fading similarly
 // but resetting to full intensity when the rank diff changes.
 
-import { isFrontPage, isListingPage, getPageRanks, currentPageNumber } from './page.js';
-import { adjustTitlesAndPersistDimming } from './dimming.js';
+import { isFrontPage, isListingPage, getPageRanks, currentPageNumber } from './page.ts';
+import { adjustTitlesAndPersistDimming } from './dimming.ts';
 import {
   FADE_SEC,
   saveSeenStories,
@@ -14,10 +14,14 @@ import {
   saveHiddenIds,
   capMap,
   MAX_ENTRIES,
-} from './storage.js';
+  type SeenStories,
+  type RankDiffMap,
+  type PageRanks,
+  type DimmingConfig,
+} from './storage.ts';
 
 /** Exponential decay: e^(-3t) where t is normalized age (0..1) */
-export function decay(ageSec) {
+export function decay(ageSec: number): number {
   if (ageSec >= FADE_SEC) return 0;
   return Math.exp((-3 * ageSec) / FADE_SEC);
 }
@@ -28,7 +32,7 @@ export function decay(ageSec) {
  * Compare current page ranks to previous page load.
  * Updates previousPageRanks and rankDiffChangedAt in place, then persists.
  */
-function computeRankDiffs(previousPageRanks, rankDiffChangedAt) {
+function computeRankDiffs(previousPageRanks: PageRanks, rankDiffChangedAt: RankDiffMap): void {
   const currentRanks = getPageRanks();
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -60,7 +64,12 @@ function computeRankDiffs(previousPageRanks, rankDiffChangedAt) {
 // --- DOM rendering ---
 
 /** Build the indicator <td> for a story row (dot + optional trend arrow) */
-export function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec) {
+export function buildIndicatorCell(
+  entryId: string | null,
+  rankDiffChangedAt: RankDiffMap,
+  seenStories: SeenStories,
+  renderTimeSec: number,
+): HTMLTableCellElement {
   const td = document.createElement('td');
   td.className = 'hn-mod-indicator-cell';
   if (!entryId) return td;
@@ -81,7 +90,7 @@ export function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, rend
       marker.style.verticalAlign = 'middle';
 
       const num = document.createElement('span');
-      num.textContent = Math.abs(changedEntry.d);
+      num.textContent = String(Math.abs(changedEntry.d));
       num.style.fontSize = '8px';
 
       const arrow = document.createElement('span');
@@ -115,13 +124,14 @@ export function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, rend
 }
 
 /** Add an empty <td> (or increment colspan) to align non-story rows */
-function addEmptyIndicatorToRow(tr) {
-  if (!tr || tr.nodeType !== Node.ELEMENT_NODE || tr.tagName !== 'TR') return;
+function addEmptyIndicatorToRow(tr: Element): void {
+  if (tr.nodeType !== Node.ELEMENT_NODE || tr.tagName !== 'TR') return;
   if (tr.classList.contains('athing') || tr.querySelector('.hn-mod-indicator-cell')) return;
 
   const colspanTd = tr.querySelector('td[colspan]');
   if (colspanTd) {
-    colspanTd.setAttribute('colspan', parseInt(colspanTd.getAttribute('colspan')) + 1);
+    const current = parseInt(colspanTd.getAttribute('colspan') || '1');
+    colspanTd.setAttribute('colspan', String(current + 1));
   } else {
     tr.insertBefore(document.createElement('td'), tr.firstChild);
   }
@@ -129,13 +139,24 @@ function addEmptyIndicatorToRow(tr) {
 
 // --- HN pagination bug fix ---
 
+interface ObserverContext {
+  previousPageRanks: PageRanks;
+  rankDiffChangedAt: RankDiffMap;
+  seenStories: SeenStories;
+  dimmingConfig: DimmingConfig;
+}
+
 /**
  * On page 2+, HN's client-side JS adds the wrong story at the bottom after a
  * hide (always picks the next story as if on page 1). We fix this by fetching
  * the correct page from the server (which has the right state post-hide) and
  * swapping in the correct last story.
  */
-async function fixWrongStoryOnPage(wrongNode, page, ctx) {
+async function fixWrongStoryOnPage(
+  wrongNode: HTMLElement,
+  page: number,
+  ctx: ObserverContext,
+): Promise<void> {
   const { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig } = ctx;
   try {
     const res = await fetch(`${window.location.pathname}?p=${page}`);
@@ -153,10 +174,12 @@ async function fixWrongStoryOnPage(wrongNode, page, ctx) {
     // On the last page, the server may return fewer stories after the hide,
     // so the "correct" last story is one already on our page — just remove
     // the wrong row instead of duplicating.
-    if (document.getElementById(correctId)) {
+    if (correctId && document.getElementById(correctId)) {
       removeStoryRows(wrongNode);
-      delete previousPageRanks[wrongId];
-      savePageRanks(previousPageRanks);
+      if (wrongId) {
+        delete previousPageRanks[wrongId];
+        savePageRanks(previousPageRanks);
+      }
       return;
     }
 
@@ -164,9 +187,11 @@ async function fixWrongStoryOnPage(wrongNode, page, ctx) {
     const correctSub = lastCorrectRow.nextElementSibling;
     const correctSpacer = correctSub?.nextElementSibling;
 
-    const newTitleRow = document.adoptNode(lastCorrectRow);
-    const newSubRow = correctSub ? document.adoptNode(correctSub) : null;
-    const newSpacerRow = correctSpacer ? document.adoptNode(correctSpacer) : null;
+    const newTitleRow = document.adoptNode(lastCorrectRow) as HTMLTableRowElement;
+    const newSubRow = correctSub ? (document.adoptNode(correctSub) as HTMLTableRowElement) : null;
+    const newSpacerRow = correctSpacer
+      ? (document.adoptNode(correctSpacer) as HTMLTableRowElement)
+      : null;
 
     // Add indicator cell before inserting (prevents re-processing by observer).
     // Don't call addEmptyIndicatorToRow here — the observer will handle the
@@ -190,11 +215,11 @@ async function fixWrongStoryOnPage(wrongNode, page, ctx) {
     addSeenLinks(seenStories);
 
     // Update rank tracking
-    delete previousPageRanks[wrongId];
+    if (wrongId) delete previousPageRanks[wrongId];
     const rankEl = newTitleRow.querySelector('span.rank');
     if (rankEl) {
-      const rank = parseInt(rankEl.textContent);
-      if (!isNaN(rank)) previousPageRanks[correctId] = rank;
+      const rank = parseInt(rankEl.textContent || '');
+      if (!isNaN(rank) && correctId) previousPageRanks[correctId] = rank;
     }
     savePageRanks(previousPageRanks);
 
@@ -210,7 +235,7 @@ async function fixWrongStoryOnPage(wrongNode, page, ctx) {
 // --- DOM helpers ---
 
 /** Remove a story's three rows (title, subtext, spacer) from the DOM */
-export function removeStoryRows(trTitle) {
+export function removeStoryRows(trTitle: Element): void {
   const trSub = trTitle.nextElementSibling;
   const trSpacer = trSub?.nextElementSibling;
   trTitle.remove();
@@ -219,18 +244,22 @@ export function removeStoryRows(trTitle) {
 }
 
 /** Hide a story's three rows immediately (used to suppress flicker) */
-function hideStoryRows(trTitle) {
+function hideStoryRows(trTitle: HTMLElement): void {
   trTitle.style.display = 'none';
   const trSub = trTitle.nextElementSibling;
-  if (trSub) trSub.style.display = 'none';
+  if (trSub instanceof HTMLElement) trSub.style.display = 'none';
   const trSpacer = trSub?.nextElementSibling;
-  if (trSpacer) trSpacer.style.display = 'none';
+  if (trSpacer instanceof HTMLElement) trSpacer.style.display = 'none';
 }
 
 // --- Entry points ---
 
 /** Insert indicator cells for all story rows and mark stories as seen */
-export function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, seenStories) {
+export function markNewAndTrendingStories(
+  previousPageRanks: PageRanks,
+  rankDiffChangedAt: RankDiffMap,
+  seenStories: SeenStories,
+): void {
   if (!isListingPage()) return;
 
   const frontPage = isFrontPage();
@@ -256,7 +285,7 @@ export function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, 
 }
 
 /** Add "seen" links to all story subtext rows */
-export function addSeenLinks(seenStories) {
+export function addSeenLinks(seenStories: SeenStories): void {
   for (const trTitle of document.querySelectorAll('tr.athing')) {
     const entryId = trTitle.getAttribute('id');
     if (!entryId) continue;
@@ -279,7 +308,7 @@ export function addSeenLinks(seenStories) {
 
       // Update all rows with this story ID (main page + unseen panel)
       for (const row of document.querySelectorAll(`tr.athing[id="${entryId}"]`)) {
-        const dot = row.querySelector('.hn-mod-dot');
+        const dot = row.querySelector<HTMLElement>('.hn-mod-dot');
         if (dot) {
           dot.style.opacity = '0.00';
           dot.style.fontSize = '12.0px';
@@ -303,7 +332,7 @@ export function addSeenLinks(seenStories) {
 }
 
 /** Record all currently visible stories as seen */
-function markVisibleStoriesAsSeen(seenStories) {
+function markVisibleStoriesAsSeen(seenStories: SeenStories): void {
   const nowSec = Math.floor(Date.now() / 1000);
   let updated = false;
 
@@ -322,11 +351,11 @@ function markVisibleStoriesAsSeen(seenStories) {
 
 /** Handle rank adjustments when stories are hidden on front pages */
 function handleHideRankAdjustments(
-  removedIds,
-  previousPageRanks,
-  hiddenIds,
-  suppressHiddenTracking,
-) {
+  removedIds: string[],
+  previousPageRanks: PageRanks,
+  hiddenIds: Set<string>,
+  suppressHiddenTracking: boolean,
+): void {
   // Track hidden story IDs (skip during pagination fix replacements)
   if (!suppressHiddenTracking) {
     for (const id of removedIds) hiddenIds.add(id);
@@ -355,27 +384,27 @@ function handleHideRankAdjustments(
  * indicator cells and rank tracking data.
  */
 export function observeNewRows(
-  previousPageRanks,
-  rankDiffChangedAt,
-  seenStories,
-  hiddenIds,
-  dimmingConfig,
-) {
+  previousPageRanks: PageRanks,
+  rankDiffChangedAt: RankDiffMap,
+  seenStories: SeenStories,
+  hiddenIds: Set<string>,
+  dimmingConfig: DimmingConfig,
+): void {
   const storyTable = document.querySelector('tr.athing')?.closest('table');
   if (!storyTable) return;
 
   let knownStoryIds = new Set(Object.keys(getPageRanks()));
   let pendingPageFix = false; // set when a hide is detected on page 2+
   let suppressHiddenTracking = false; // suppress during pagination fix replacements
-  const ctx = { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig };
+  const ctx: ObserverContext = { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig };
 
   const observer = new MutationObserver((mutations) => {
     const renderTimeSec = Math.floor(Date.now() / 1000);
-    const addedStoryNodes = [];
+    const addedStoryNodes: HTMLElement[] = [];
 
     for (const { addedNodes } of mutations) {
       for (const node of addedNodes) {
-        if (node?.nodeType !== Node.ELEMENT_NODE || node.tagName !== 'TR') continue;
+        if (!(node instanceof HTMLElement) || node.tagName !== 'TR') continue;
         if (node.querySelector('.hn-mod-indicator-cell')) continue;
 
         if (node.classList.contains('athing')) {

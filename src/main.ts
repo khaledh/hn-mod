@@ -3,12 +3,12 @@
 // Loads persisted state from chrome.storage.sync, then initializes
 // each feature module: dimming, colorization, and new/trending indicators.
 
-import { loadAll, loadSeenStories, expandRankDiffs, capArray, pruneOldRanks } from './storage.js';
-import { isHiddenPage, syncHiddenIdsFromPage, cleanHiddenIds } from './page.js';
-import { adjustTitlesAndPersistDimming } from './dimming.js';
-import { colorizePoints } from './colorize.js';
-import { markNewAndTrendingStories, observeNewRows, addSeenLinks } from './indicators.js';
-import { showUnseenStories } from './unseen.js';
+import { loadAll, loadSeenStories, expandRankDiffs, capArray, pruneOldRanks } from './storage.ts';
+import { isHiddenPage, syncHiddenIdsFromPage, cleanHiddenIds } from './page.ts';
+import { adjustTitlesAndPersistDimming } from './dimming.ts';
+import { colorizePoints } from './colorize.ts';
+import { markNewAndTrendingStories, observeNewRows, addSeenLinks } from './indicators.ts';
+import { showUnseenStories } from './unseen.ts';
 
 loadAll((items) => {
   // Handles all formats: chunked (seenIds_0..N), legacy single (seenIds), legacy compact (seenStories)

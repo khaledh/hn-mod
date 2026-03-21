@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decay } from '../src/indicators.js';
+import { decay } from '../src/indicators.ts';
 
 const FADE_SEC = 30 * 60;
 

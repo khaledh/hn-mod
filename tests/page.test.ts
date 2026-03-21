@@ -2,13 +2,13 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect } from 'vitest';
-import { isFrontPage, isListingPage } from '../src/page.js';
+import { isFrontPage, isListingPage } from '../src/page.ts';
 
 // jsdom provides window.location; we override pathname via history API workaround
-function setPath(path) {
+function setPath(path: string) {
   // jsdom doesn't support navigation, so we replace the property directly
   Object.defineProperty(window, 'location', {
-    value: { ...window.location, pathname: path },
+    value: { ...window.location, pathname: path } as Location,
     writable: true,
     configurable: true,
   });

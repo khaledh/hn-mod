@@ -5,18 +5,29 @@
 // Story details are fetched lazily when the section is expanded.
 // Rows are styled identically to HN's native story rows, with indicators.
 
-import { isListingPage, currentPageNumber } from './page.js';
-import { buildIndicatorCell, addSeenLinks, removeStoryRows } from './indicators.js';
-import { intensityStyle } from './colorize.js';
-import { adjustTitlesAndPersistDimming } from './dimming.js';
-import { FADE_SEC, saveHiddenIds } from './storage.js';
-import { fetchTopStoryIds, fetchStory, fetchAuthToken } from './api.js';
+import { isListingPage, currentPageNumber } from './page.ts';
+import { buildIndicatorCell, addSeenLinks, removeStoryRows } from './indicators.ts';
+import { intensityStyle, type IntensityStyle } from './colorize.ts';
+import { adjustTitlesAndPersistDimming } from './dimming.ts';
+import { FADE_SEC, saveHiddenIds, type SeenStories, type DimmingConfig } from './storage.ts';
+import { fetchTopStoryIds, fetchStory, fetchAuthToken, type HNStory } from './api.ts';
+
+function applyStyle(el: HTMLElement, style: IntensityStyle | null): void {
+  if (!style) return;
+  el.style.color = style.color;
+  el.style.fontWeight = style.fontWeight;
+}
 
 const MAX_UNSEEN_SHOWN = 5;
 const STORIES_PER_PAGE = 30;
 
+interface UnseenEntry {
+  id: number;
+  rank: number;
+}
+
 /** Format Unix timestamp as relative time (e.g. "3 hours ago") */
-function timeAgo(unixTime) {
+function timeAgo(unixTime: number): string {
   const sec = Math.floor(Date.now() / 1000) - unixTime;
   if (sec < 60) return 'just now';
   const min = Math.floor(sec / 60);
@@ -29,7 +40,14 @@ function timeAgo(unixTime) {
 
 // --- Action links (added after auth tokens load) ---
 
-function addActionLinks(tdSubtext, story, authToken, hiddenIds, id, trTitle) {
+function addActionLinks(
+  tdSubtext: HTMLElement,
+  story: HNStory,
+  authToken: string,
+  hiddenIds: Set<string>,
+  id: string,
+  trTitle: HTMLElement,
+): void {
   const itemUrl = `item?id=${story.id}`;
   const actions = [
     { text: 'flag', href: `flag?id=${story.id}&auth=${authToken}&goto=${itemUrl}` },
@@ -48,7 +66,7 @@ function addActionLinks(tdSubtext, story, authToken, hiddenIds, id, trTitle) {
         saveHiddenIds(hiddenIds);
         trTitle.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
 
-        const mainHideLink = document.querySelector(
+        const mainHideLink = document.querySelector<HTMLAnchorElement>(
           `tr.athing[id="${id}"] ~ tr a.clicky[href^="hide?id=${id}&"]`,
         );
         if (mainHideLink && mainHideLink.closest('.hn-mod-unseen') === null) {
@@ -65,7 +83,11 @@ function addActionLinks(tdSubtext, story, authToken, hiddenIds, id, trTitle) {
 
 // --- Row building (matches HN's native DOM structure) ---
 
-function buildStoryRows(story, rank, seenStories) {
+function buildStoryRows(
+  story: HNStory,
+  rank: number,
+  seenStories: SeenStories,
+): [HTMLTableRowElement, HTMLTableRowElement, HTMLTableRowElement] {
   const id = String(story.id);
   const renderTimeSec = Math.floor(Date.now() / 1000);
 
@@ -131,11 +153,7 @@ function buildStoryRows(story, rank, seenStories) {
   scoreSpan.className = 'score';
   scoreSpan.id = `score_${story.id}`;
   scoreSpan.textContent = `${story.score || 0} points`;
-  const scoreStyle = intensityStyle(story.score || 0);
-  if (scoreStyle.color) {
-    scoreSpan.style.color = scoreStyle.color;
-    scoreSpan.style.fontWeight = scoreStyle.fontWeight;
-  }
+  applyStyle(scoreSpan, intensityStyle(story.score || 0));
   tdSubtext.appendChild(scoreSpan);
 
   tdSubtext.appendChild(document.createTextNode(` by `));
@@ -154,11 +172,7 @@ function buildStoryRows(story, rank, seenStories) {
     const commentsLink = document.createElement('a');
     commentsLink.href = `https://news.ycombinator.com/item?id=${story.id}`;
     commentsLink.textContent = `${story.descendants}\u00a0comments`;
-    const commentStyle = intensityStyle(story.descendants);
-    if (commentStyle.color) {
-      commentsLink.style.color = commentStyle.color;
-      commentsLink.style.fontWeight = commentStyle.fontWeight;
-    }
+    applyStyle(commentsLink, intensityStyle(story.descendants));
     tdSubtext.appendChild(commentsLink);
   }
 
@@ -177,8 +191,8 @@ function buildStoryRows(story, rank, seenStories) {
 
 // --- Pagination ---
 
-function addPaginationLinks(visibleCount) {
-  const moreLink = document.querySelector('a.morelink');
+function addPaginationLinks(visibleCount: number): void {
+  const moreLink = document.querySelector<HTMLAnchorElement>('a.morelink');
   if (!moreLink) return;
 
   moreLink.textContent = 'Next';
@@ -194,23 +208,30 @@ function addPaginationLinks(visibleCount) {
     if (p > 1) td.appendChild(document.createTextNode('\u2003'));
     if (p === page) {
       const span = document.createElement('span');
-      span.textContent = p;
+      span.textContent = String(p);
       span.style.fontWeight = 'bold';
       td.appendChild(span);
     } else {
       const a = document.createElement('a');
       a.href = `${basePath}?p=${p}`;
-      a.textContent = p;
+      a.textContent = String(p);
       td.appendChild(a);
     }
   }
-  moreLink.closest('td').after(td);
+  const moreTd = moreLink.closest('td');
+  if (moreTd) moreTd.after(td);
 }
 
 // --- Unseen panel content loading ---
 
 /** Append a story row to the panel tbody and wire up its action links */
-async function appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingConfig) {
+async function appendStoryToPanel(
+  entry: UnseenEntry,
+  tbody: HTMLTableSectionElement,
+  seenStories: SeenStories,
+  hiddenIds: Set<string>,
+  dimmingConfig: DimmingConfig,
+): Promise<void> {
   const [story, authToken] = await Promise.all([fetchStory(entry.id), fetchAuthToken(entry.id)]);
   if (!story) return;
 
@@ -219,9 +240,9 @@ async function appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingC
   }
   if (authToken) {
     const id = String(story.id);
-    const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
-    const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
-    if (tdSubtext) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
+    const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="${id}"]`);
+    const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
+    if (tdSubtext && tr) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
   }
   adjustTitlesAndPersistDimming(dimmingConfig);
   addSeenLinks(seenStories);
@@ -229,14 +250,14 @@ async function appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingC
 
 /** Load initial stories into the panel */
 async function loadPanelContent(
-  content,
-  unseenEntries,
-  seenStories,
-  hiddenIds,
-  dimmingConfig,
-  summary,
-  details,
-) {
+  content: HTMLElement,
+  unseenEntries: UnseenEntry[],
+  seenStories: SeenStories,
+  hiddenIds: Set<string>,
+  dimmingConfig: DimmingConfig,
+  summary: HTMLElement,
+  details: HTMLDetailsElement,
+): Promise<void> {
   content.textContent = 'Loading...';
 
   const shown = unseenEntries.slice(0, MAX_UNSEEN_SHOWN);
@@ -263,8 +284,8 @@ async function loadPanelContent(
   content.appendChild(table);
 
   // Overflow message
-  let moreDiv = null;
-  function updateOverflowMsg() {
+  let moreDiv: HTMLDivElement | null = null;
+  function updateOverflowMsg(): void {
     if (overflow.length > 0) {
       if (!moreDiv) {
         moreDiv = document.createElement('div');
@@ -282,12 +303,14 @@ async function loadPanelContent(
   // Fetch auth tokens in background, then add action links + dimming/seen
   Promise.all(shown.map(({ id }) => fetchAuthToken(id))).then((authTokens) => {
     for (let i = 0; i < stories.length; i++) {
-      if (!stories[i] || !authTokens[i]) continue;
-      const id = String(stories[i].id);
-      const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
-      const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
-      if (!tdSubtext) continue;
-      addActionLinks(tdSubtext, stories[i], authTokens[i], hiddenIds, id, tr);
+      const story = stories[i];
+      const token = authTokens[i];
+      if (!story || !token) continue;
+      const id = String(story.id);
+      const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="${id}"]`);
+      const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
+      if (!tdSubtext || !tr) continue;
+      addActionLinks(tdSubtext, story, token, hiddenIds, id, tr);
     }
     adjustTitlesAndPersistDimming(dimmingConfig);
     addSeenLinks(seenStories);
@@ -296,7 +319,9 @@ async function loadPanelContent(
   // Remove stories from the panel when marked as seen/hidden
   let unseenCount = unseenEntries.length;
   table.addEventListener('hn-mod-seen', (e) => {
-    const trTitle = e.target.closest('tr.athing');
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const trTitle = target.closest('tr.athing');
     if (!trTitle) return;
     removeStoryRows(trTitle);
 
@@ -306,6 +331,7 @@ async function loadPanelContent(
       // Backfill from overflow
       if (overflow.length > 0) {
         const entry = overflow.shift();
+        if (!entry) return;
         updateOverflowMsg();
         appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingConfig);
       }
@@ -324,10 +350,12 @@ async function loadPanelContent(
 
 /**
  * Show a collapsible "unseen stories" section at the top of the page.
- * @param {Object} seenStories - in-memory seen map { id: timestamp | true }
- * @param {Set<string>} hiddenIds - IDs of stories the user has hidden
  */
-export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
+export async function showUnseenStories(
+  seenStories: SeenStories,
+  hiddenIds: Set<string>,
+  dimmingConfig: DimmingConfig,
+): Promise<void> {
   if (!isListingPage()) return;
 
   // Snapshot seen state before the async fetch, since markNewAndTrendingStories
@@ -343,7 +371,7 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
   addPaginationLinks(visibleIds.length);
 
   // Include stories that are unseen or still within the fade period
-  const unseenEntries = [];
+  const unseenEntries: UnseenEntry[] = [];
   for (let i = 0; i < visibleIds.length; i++) {
     const id = visibleIds[i];
     const seen = seenSnapshot[String(id)];
@@ -356,11 +384,14 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
   const storyTable = document.querySelector('tr.athing')?.closest('table');
   if (!storyTable) return;
 
+  const parentEl = storyTable.parentNode;
+  if (!parentEl) return;
+
   if (unseenEntries.length === 0) {
     const msg = document.createElement('div');
     msg.className = 'hn-mod-unseen';
     msg.textContent = 'No new stories';
-    storyTable.parentNode.insertBefore(msg, storyTable);
+    parentEl.insertBefore(msg, storyTable);
     return;
   }
 
@@ -394,5 +425,5 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
     );
   });
 
-  storyTable.parentNode.insertBefore(details, storyTable);
+  parentEl.insertBefore(details, storyTable);
 }

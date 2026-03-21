@@ -5,7 +5,7 @@ import {
   compactRankDiffs,
   capArray,
   capMap,
-} from '../src/storage.js';
+} from '../src/storage.ts';
 
 describe('loadSeenStories', () => {
   it('loads chunked seenIds as true values', () => {
@@ -76,7 +76,7 @@ describe('capArray', () => {
 
 describe('capMap', () => {
   it('keeps entries with highest values', () => {
-    const map = { a: 1, b: 5, c: 3, d: 2 };
+    const map: Record<string, number> = { a: 1, b: 5, c: 3, d: 2 };
     capMap(map, 2, (v) => v);
     expect(Object.keys(map).sort()).toEqual(['b', 'c']);
   });

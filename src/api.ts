@@ -4,18 +4,29 @@
 
 const API_BASE = 'https://hacker-news.firebaseio.com/v0';
 
-export async function fetchTopStoryIds() {
+export interface HNStory {
+  id: number;
+  title: string;
+  url?: string;
+  score?: number;
+  by: string;
+  time: number;
+  descendants?: number;
+  type: string;
+}
+
+export async function fetchTopStoryIds(): Promise<number[]> {
   const res = await fetch(`${API_BASE}/topstories.json`);
   return res.json();
 }
 
-export async function fetchStory(id) {
+export async function fetchStory(id: number): Promise<HNStory | null> {
   const res = await fetch(`${API_BASE}/item/${id}.json`);
   return res.json();
 }
 
 /** Fetch a story's item page and extract its per-story auth token from the hide link */
-export async function fetchAuthToken(id) {
+export async function fetchAuthToken(id: number): Promise<string | null> {
   try {
     const res = await fetch(`https://news.ycombinator.com/item?id=${id}`);
     const html = await res.text();

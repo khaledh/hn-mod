@@ -8,6 +8,41 @@ export const PRUNE_AGE_SEC = 72 * 60 * 60; // 72 hours
 
 export const FADE_SEC = 30 * 60; // 30 minutes
 
+// --- Shared types ---
+
+export type SeenStories = Record<string, number | true>;
+
+export interface RankDiffEntry {
+  d: number;
+  t: number;
+}
+export type RankDiffMap = Record<string, RankDiffEntry>;
+export type PageRanks = Record<string, number>;
+
+export interface DimmingConfig {
+  ciKeywords: string[];
+  csKeywords: string[];
+  domains: string[];
+  dimmedEntries: string[];
+  undimmedEntries: string[];
+}
+
+export interface StorageItems {
+  ciKeywords: string[];
+  csKeywords: string[];
+  domains: string[];
+  dimmedEntries: string[];
+  undimmedEntries: string[];
+  previousPageRanks: PageRanks;
+  rankDiffChangedAt: Record<string, string[]>;
+  recentlySeen: Record<string, string[]>;
+  hiddenIds: number[];
+  showUnseen: boolean;
+  seenIds: number[] | null;
+  seenStories: Record<string, string[]> | null;
+  [key: `seenIds_${number}`]: number[];
+}
+
 // --- Seen stories ---
 // Storage: split across multiple keys to stay under 8KB per-item limit:
 //   seenIds_0, seenIds_1, ...: flat number arrays (~800 IDs each)
@@ -16,13 +51,13 @@ export const FADE_SEC = 30 * 60; // 30 minutes
 //   timestamp = still fading (within 30 min), true = seen and fully faded
 
 /** Seen chunk key names */
-export function seenChunkKey(i) {
+export function seenChunkKey(i: number): `seenIds_${number}` {
   return `seenIds_${i}`;
 }
 
 /** Load seen data from chunked storage keys into a single in-memory map */
-export function loadSeenStories(items) {
-  const map = {};
+export function loadSeenStories(items: Partial<StorageItems>): SeenStories {
+  const map: SeenStories = {};
   // Merge all chunks
   for (let i = 0; i < SEEN_CHUNKS; i++) {
     const chunk = items[seenChunkKey(i)] || [];
@@ -49,10 +84,10 @@ export function loadSeenStories(items) {
 }
 
 /** Save seen data, splitting IDs across chunked keys + recentlySeen */
-export function saveSeenStories(seenStories) {
+export function saveSeenStories(seenStories: SeenStories): void {
   const nowSec = Math.floor(Date.now() / 1000);
-  const ids = [];
-  const recent = {};
+  const ids: number[] = [];
+  const recent: Record<string, string[]> = {};
 
   for (const [id, val] of Object.entries(seenStories)) {
     ids.push(Number(id));
@@ -66,7 +101,9 @@ export function saveSeenStories(seenStories) {
   if (ids.length > MAX_SEEN_IDS) ids.splice(0, ids.length - MAX_SEEN_IDS);
 
   // Split into chunks
-  const data = { recentlySeen: recent };
+  const data: Record<string, string[] | Record<string, string[]> | number[]> = {
+    recentlySeen: recent,
+  };
   for (let i = 0; i < SEEN_CHUNKS; i++) {
     data[seenChunkKey(i)] = ids.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
   }
@@ -78,8 +115,8 @@ export function saveSeenStories(seenStories) {
 // Storage:  { "diff,timestamp": [id, ...], ... }
 // In-memory: { id: { d: diff, t: timestamp }, ... }
 
-export function expandRankDiffs(compact) {
-  const flat = {};
+export function expandRankDiffs(compact: Record<string, string[]>): RankDiffMap {
+  const flat: RankDiffMap = {};
   for (const [key, ids] of Object.entries(compact)) {
     const [d, t] = key.split(',').map(Number);
     for (const id of ids) flat[id] = { d, t };
@@ -87,8 +124,8 @@ export function expandRankDiffs(compact) {
   return flat;
 }
 
-export function compactRankDiffs(flat) {
-  const grouped = {};
+export function compactRankDiffs(flat: RankDiffMap): Record<string, string[]> {
+  const grouped: Record<string, string[]> = {};
   for (const [id, { d, t }] of Object.entries(flat)) {
     const key = `${d},${t}`;
     (grouped[key] ??= []).push(id);
@@ -98,19 +135,19 @@ export function compactRankDiffs(flat) {
 
 // --- Persistence ---
 
-export function saveRankDiffs(rankDiffChangedAt) {
+export function saveRankDiffs(rankDiffChangedAt: RankDiffMap): void {
   chrome.storage.sync.set({ rankDiffChangedAt: compactRankDiffs(rankDiffChangedAt) });
 }
 
-export function savePageRanks(previousPageRanks) {
+export function savePageRanks(previousPageRanks: PageRanks): void {
   chrome.storage.sync.set({ previousPageRanks });
 }
 
-export function saveDimState(dimmedEntries, undimmedEntries) {
+export function saveDimState(dimmedEntries: string[], undimmedEntries: string[]): void {
   chrome.storage.sync.set({ dimmedEntries, undimmedEntries });
 }
 
-export function saveHiddenIds(hiddenIds) {
+export function saveHiddenIds(hiddenIds: Set<string>): void {
   const arr = [...hiddenIds].map(Number);
   if (arr.length > MAX_SEEN_IDS) arr.splice(0, arr.length - MAX_SEEN_IDS);
   chrome.storage.sync.set({ hiddenIds: arr });
@@ -119,12 +156,12 @@ export function saveHiddenIds(hiddenIds) {
 // --- Maintenance ---
 
 /** Trim an array to the last `max` entries (queue semantics: oldest removed first) */
-export function capArray(arr, max = MAX_ENTRIES) {
+export function capArray<T>(arr: T[], max = MAX_ENTRIES): void {
   if (arr.length > max) arr.splice(0, arr.length - max);
 }
 
 /** Trim a map to `max` entries, keeping those with the highest sort values */
-export function capMap(map, max, valueFn) {
+export function capMap<T>(map: Record<string, T>, max: number, valueFn: (v: T) => number): void {
   const entries = Object.entries(map);
   if (entries.length <= max) return;
   entries.sort((a, b) => valueFn(a[1]) - valueFn(b[1]));
@@ -134,7 +171,7 @@ export function capMap(map, max, valueFn) {
 }
 
 /** Remove previousPageRanks entries older than PRUNE_AGE_SEC (based on seenStories timestamps) */
-export function pruneOldRanks(seenStories, previousPageRanks) {
+export function pruneOldRanks(seenStories: SeenStories, previousPageRanks: PageRanks): void {
   const nowSec = Math.floor(Date.now() / 1000);
   for (const id of Object.keys(previousPageRanks)) {
     const seenAt = seenStories[id];
@@ -145,9 +182,9 @@ export function pruneOldRanks(seenStories, previousPageRanks) {
   }
 }
 
-/** Load all extension data from sync storage */
-export function loadAll(callback) {
-  const defaults = {
+/** Build the defaults object for chrome.storage.sync.get */
+function storageDefaults(): Partial<StorageItems> {
+  const defaults: Partial<StorageItems> = {
     ciKeywords: [],
     csKeywords: [],
     domains: [],
@@ -161,9 +198,14 @@ export function loadAll(callback) {
     seenIds: null, // legacy single-key format
     seenStories: null, // legacy compact format
   };
-  // Add chunk keys
   for (let i = 0; i < SEEN_CHUNKS; i++) {
     defaults[seenChunkKey(i)] = [];
   }
-  chrome.storage.sync.get(defaults, callback);
+  return defaults;
+}
+
+/** Load all extension data from sync storage */
+export function loadAll(callback: (items: StorageItems) => void): void {
+  // chrome.storage.sync.get returns { [key: string]: unknown }; we know the shape from defaults
+  chrome.storage.sync.get(storageDefaults(), (items) => callback(items as unknown as StorageItems));
 }

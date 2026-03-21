@@ -17,8 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
 
 const STATIC_FILES = ['styles.css', 'options.html'];
-const SRC_FILES = ['options.js'];
-const DEV_FILES = ['hot-reload.js'];
+const STANDALONE_SCRIPTS = ['options', 'hot-reload'];
 
 function copyFiles(files, srcDir = ROOT) {
   for (const file of files) {
@@ -33,6 +32,17 @@ function writeManifest({ stripBackground = false } = {}) {
   return manifest.version;
 }
 
+async function buildStandaloneScripts(isPackage, scripts) {
+  for (const name of scripts) {
+    await build({
+      entryPoints: [resolve(ROOT, `src/${name}.ts`)],
+      outfile: resolve(DIST, `${name}.js`),
+      format: 'iife',
+      minify: isPackage,
+    });
+  }
+}
+
 async function main() {
   const isPackage = process.argv.includes('--package');
   const isWatch = process.argv.includes('--watch');
@@ -42,7 +52,7 @@ async function main() {
   mkdirSync(DIST, { recursive: true });
 
   const esbuildOptions = {
-    entryPoints: [resolve(ROOT, 'src/main.js')],
+    entryPoints: [resolve(ROOT, 'src/main.ts')],
     bundle: true,
     minify: isPackage,
     outfile: resolve(DIST, 'content.js'),
@@ -52,25 +62,24 @@ async function main() {
   if (isWatch) {
     const ctx = await context(esbuildOptions);
     copyFiles(STATIC_FILES);
-    copyFiles(SRC_FILES, resolve(ROOT, 'src'));
-    copyFiles(DEV_FILES, resolve(ROOT, 'src'));
+    await buildStandaloneScripts(false, STANDALONE_SCRIPTS);
     writeManifest();
     console.log('Watching for changes...');
     await ctx.watch();
   } else {
     await build(esbuildOptions);
     copyFiles(STATIC_FILES);
-    copyFiles(SRC_FILES, resolve(ROOT, 'src'));
 
     if (isPackage) {
       // Production: strip dev files
+      await buildStandaloneScripts(true, ['options']);
       const version = writeManifest({ stripBackground: true });
       const zipName = `hn-mod-${version}.zip`;
       execSync(`cd "${DIST}" && zip -r "${resolve(ROOT, zipName)}" .`);
       console.log(`Packaged v${version} → ${zipName}`);
     } else {
       // Dev: include hot-reload
-      copyFiles(DEV_FILES, resolve(ROOT, 'src'));
+      await buildStandaloneScripts(false, STANDALONE_SCRIPTS);
       const version = writeManifest();
       console.log(`Built v${version} → dist/`);
     }
