@@ -320,7 +320,7 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
     content.textContent = 'Loading...';
 
     const shown = unseenEntries.slice(0, MAX_UNSEEN_SHOWN);
-    const overflowCount = unseenEntries.length - shown.length;
+    const overflow = unseenEntries.slice(MAX_UNSEEN_SHOWN);
 
     const stories = await Promise.all(shown.map(({ id }) => fetchStory(id)));
 
@@ -342,12 +342,21 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
     table.appendChild(tbody);
     content.appendChild(table);
 
-    if (overflowCount > 0) {
-      const more = document.createElement('div');
-      more.className = 'hn-mod-unseen-more';
-      more.textContent = `${overflowCount} more new ${overflowCount === 1 ? 'story' : 'stories'}`;
-      content.appendChild(more);
+    let moreDiv = null;
+    function updateOverflowMsg() {
+      if (overflow.length > 0) {
+        if (!moreDiv) {
+          moreDiv = document.createElement('div');
+          moreDiv.className = 'hn-mod-unseen-more';
+          content.appendChild(moreDiv);
+        }
+        moreDiv.textContent = `${overflow.length} more new ${overflow.length === 1 ? 'story' : 'stories'}`;
+      } else if (moreDiv) {
+        moreDiv.remove();
+        moreDiv = null;
+      }
     }
+    updateOverflowMsg();
 
     // Fetch auth tokens in background, then add action links + dimming/seen
     Promise.all(shown.map(({ id }) => fetchAuthToken(id))).then(authTokens => {
@@ -363,7 +372,32 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
       addSeenLinks(seenStories);
     });
 
-    // Remove stories from the panel when marked as seen
+    /** Fetch and append the next overflow story to the panel */
+    async function backfillNext() {
+      if (overflow.length === 0) return;
+      const entry = overflow.shift();
+      updateOverflowMsg();
+
+      const [story, authToken] = await Promise.all([
+        fetchStory(entry.id),
+        fetchAuthToken(entry.id),
+      ]);
+      if (!story) return;
+
+      for (const row of buildStoryRows(story, entry.rank, seenStories, null, hiddenIds)) {
+        tbody.appendChild(row);
+      }
+      if (authToken) {
+        const id = String(story.id);
+        const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
+        const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
+        if (tdSubtext) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
+      }
+      adjustTitlesAndPersistDimming(dimmingConfig);
+      addSeenLinks(seenStories);
+    }
+
+    // Remove stories from the panel when marked as seen/hidden
     let unseenCount = unseenEntries.length;
     table.addEventListener('hn-mod-seen', (e) => {
       const trTitle = e.target.closest('tr.athing');
@@ -377,6 +411,7 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
       unseenCount--;
       if (unseenCount > 0) {
         summary.textContent = `${unseenCount} new ${unseenCount === 1 ? 'story' : 'stories'}`;
+        backfillNext();
       } else {
         details.replaceWith(Object.assign(document.createElement('div'), {
           className: 'hn-mod-unseen',
