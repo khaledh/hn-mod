@@ -1,33 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import {
   loadSeenStories,
-  expandRankDiffs, compactRankDiffs,
-  capArray, capMap,
+  expandRankDiffs,
+  compactRankDiffs,
+  capArray,
+  capMap,
 } from '../src/storage.js';
 
 describe('loadSeenStories', () => {
   it('loads chunked seenIds as true values', () => {
     const result = loadSeenStories({ seenIds_0: [111, 222], seenIds_1: [333] });
-    expect(result).toEqual({ '111': true, '222': true, '333': true });
+    expect(result).toEqual({ 111: true, 222: true, 333: true });
   });
 
   it('loads recentlySeen with timestamps', () => {
-    const result = loadSeenStories({ recentlySeen: { '5000': ['aaa', 'bbb'] } });
+    const result = loadSeenStories({ recentlySeen: { 5000: ['aaa', 'bbb'] } });
     expect(result).toEqual({ aaa: 5000, bbb: 5000 });
   });
 
   it('recent timestamps overwrite seenIds entries', () => {
-    const result = loadSeenStories({ seenIds_0: [111], recentlySeen: { '5000': ['111'] } });
-    expect(result).toEqual({ '111': 5000 });
+    const result = loadSeenStories({ seenIds_0: [111], recentlySeen: { 5000: ['111'] } });
+    expect(result).toEqual({ 111: 5000 });
   });
 
   it('migrates legacy single seenIds key', () => {
     const result = loadSeenStories({ seenIds: [111, 222] });
-    expect(result).toEqual({ '111': true, '222': true });
+    expect(result).toEqual({ 111: true, 222: true });
   });
 
   it('migrates legacy seenStories compact format', () => {
-    const result = loadSeenStories({ seenStories: { '1000': ['aaa'] } });
+    const result = loadSeenStories({ seenStories: { 1000: ['aaa'] } });
     expect(result).toEqual({ aaa: 1000 });
   });
 
@@ -75,7 +77,7 @@ describe('capArray', () => {
 describe('capMap', () => {
   it('keeps entries with highest values', () => {
     const map = { a: 1, b: 5, c: 3, d: 2 };
-    capMap(map, 2, v => v);
+    capMap(map, 2, (v) => v);
     expect(Object.keys(map).sort()).toEqual(['b', 'c']);
   });
 });

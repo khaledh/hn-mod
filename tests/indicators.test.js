@@ -21,8 +21,8 @@ describe('decay', () => {
   });
 
   it('decays faster initially (exponential shape)', () => {
-    const earlyDrop = decay(0) - decay(300);    // first 5 min
-    const lateDrop = decay(1200) - decay(1500);  // 20-25 min
+    const earlyDrop = decay(0) - decay(300); // first 5 min
+    const lateDrop = decay(1200) - decay(1500); // 20-25 min
     expect(earlyDrop).toBeGreaterThan(lateDrop);
   });
 });

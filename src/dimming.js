@@ -11,13 +11,17 @@ function escapeForRegex(s) {
 
 /** Check if a story title/site matches any dimming rules */
 function matchesDimRules(title, site, ciKeywords, csKeywords, domains) {
-  if (site && domains.some(d => site.innerText.startsWith(d))) return true;
-  if (csKeywords.some(kw =>
-    new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(title.innerText)
-  )) return true;
-  if (ciKeywords.some(kw =>
-    new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(title.innerText.toLowerCase())
-  )) return true;
+  if (site && domains.some((d) => site.innerText.startsWith(d))) return true;
+  if (
+    csKeywords.some((kw) => new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(title.innerText))
+  )
+    return true;
+  if (
+    ciKeywords.some((kw) =>
+      new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(title.innerText.toLowerCase()),
+    )
+  )
+    return true;
   return false;
 }
 
@@ -38,7 +42,10 @@ function applyDimming(els, isDimming) {
     cell.style.opacity = opacity;
     cell.style.fontSize = fontSize;
     const img = cell.querySelector('img');
-    if (img) { img.width = imgSize; img.height = imgSize; }
+    if (img) {
+      img.width = imgSize;
+      img.height = imgSize;
+    }
   }
 
   if (els.tdSubtext) {
@@ -101,10 +108,10 @@ export function adjustTitlesAndPersistDimming(config) {
   for (const trTitle of document.querySelectorAll('.athing')) {
     const els = getStoryElements(trTitle);
 
-    const shouldDim = !undimmedEntries.includes(els.entryId) && (
-      matchesDimRules(els.aTitle, els.aSite, ciKeywords, csKeywords, domains) ||
-      dimmedEntries.includes(els.entryId)
-    );
+    const shouldDim =
+      !undimmedEntries.includes(els.entryId) &&
+      (matchesDimRules(els.aTitle, els.aSite, ciKeywords, csKeywords, domains) ||
+        dimmedEntries.includes(els.entryId));
 
     if (shouldDim) applyDimming(els, true);
 

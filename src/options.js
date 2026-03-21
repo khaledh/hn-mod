@@ -1,8 +1,8 @@
 // Options page — tabbed interface
 
 const state = {
-  ci: [],      // case-insensitive keywords
-  cs: [],      // case-sensitive keywords
+  ci: [], // case-insensitive keywords
+  cs: [], // case-sensitive keywords
   domains: [], // domains
 };
 
@@ -10,10 +10,10 @@ const state = {
 
 function setupTabs() {
   const tabs = document.querySelectorAll('.tab');
-  tabs.forEach(tab => {
+  tabs.forEach((tab) => {
     tab.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      tabs.forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
       tab.classList.add('active');
       document.getElementById(`panel-${tab.dataset.panel}`).classList.add('active');
     });
@@ -34,7 +34,7 @@ function renderTags(key, containerId) {
     remove.className = 'remove';
     remove.textContent = '\u00d7';
     remove.onclick = () => {
-      state[key] = state[key].filter(v => v !== value);
+      state[key] = state[key].filter((v) => v !== value);
       renderTags(key, containerId);
     };
 
@@ -59,7 +59,10 @@ function setupTagInput(key, inputId, containerId) {
   const input = document.getElementById(inputId);
   const btn = input.nextElementSibling;
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); addTag(key, inputId, containerId); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addTag(key, inputId, containerId);
+    }
   });
   btn.addEventListener('click', () => addTag(key, inputId, containerId));
 }
@@ -69,35 +72,43 @@ function setupTagInput(key, inputId, containerId) {
 function showStatus(id, message, duration = 1500) {
   const el = document.getElementById(id);
   el.textContent = message;
-  setTimeout(() => { el.textContent = ''; }, duration);
+  setTimeout(() => {
+    el.textContent = '';
+  }, duration);
 }
 
 function reloadHNTabs() {
   chrome.tabs.query({ url: 'https://news.ycombinator.com/*' }, (tabs) => {
-    tabs.forEach(tab => chrome.tabs.reload(tab.id));
+    tabs.forEach((tab) => chrome.tabs.reload(tab.id));
   });
 }
 
 // --- Save / Load ---
 
 function saveDimming() {
-  chrome.storage.sync.set({
-    ciKeywords: state.ci,
-    csKeywords: state.cs,
-    domains: state.domains,
-  }, () => {
-    showStatus('status', 'Saved');
-    reloadHNTabs();
-  });
+  chrome.storage.sync.set(
+    {
+      ciKeywords: state.ci,
+      csKeywords: state.cs,
+      domains: state.domains,
+    },
+    () => {
+      showStatus('status', 'Saved');
+      reloadHNTabs();
+    },
+  );
 }
 
 function saveNewStories() {
-  chrome.storage.sync.set({
-    showUnseen: document.getElementById('show-unseen').checked,
-  }, () => {
-    showStatus('new-stories-status', 'Saved');
-    reloadHNTabs();
-  });
+  chrome.storage.sync.set(
+    {
+      showUnseen: document.getElementById('show-unseen').checked,
+    },
+    () => {
+      showStatus('new-stories-status', 'Saved');
+      reloadHNTabs();
+    },
+  );
 }
 
 function restoreOptions() {
@@ -111,21 +122,29 @@ function restoreOptions() {
       renderTags('ci', 'ci-tags');
       renderTags('cs', 'cs-tags');
       renderTags('domains', 'domains-tags');
-    }
+    },
   );
 }
 
 function resetTracking() {
   if (!confirm('Reset all tracking data? This cannot be undone.')) return;
   chrome.storage.sync.remove(
-    ['previousPageRanks', 'rankDiffChangedAt',
-     'seenIds', 'seenIds_0', 'seenIds_1', 'seenIds_2',
-     'recentlySeen', 'hiddenIds', 'seenStories'],
+    [
+      'previousPageRanks',
+      'rankDiffChangedAt',
+      'seenIds',
+      'seenIds_0',
+      'seenIds_1',
+      'seenIds_2',
+      'recentlySeen',
+      'hiddenIds',
+      'seenStories',
+    ],
     () => {
       showStatus('reset-status', 'Reset complete');
       loadStorageStats();
       reloadHNTabs();
-    }
+    },
   );
 }
 
@@ -139,7 +158,7 @@ function loadStorageStats() {
     const dimmingKeys = ['ciKeywords', 'csKeywords', 'domains', 'dimmedEntries', 'undimmedEntries'];
     const settingsKeys = ['showUnseen'];
     const keys = Object.keys(items).sort();
-    const trackingKeys = keys.filter(k => !dimmingKeys.includes(k) && !settingsKeys.includes(k));
+    const trackingKeys = keys.filter((k) => !dimmingKeys.includes(k) && !settingsKeys.includes(k));
 
     let totalBytes = 0;
 
@@ -168,9 +187,10 @@ function loadStorageStats() {
         totalBytes += bytes;
         const count = entryCount(items[key]);
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td class="key">${key}</td>`
-          + `<td class="val">${count !== null ? count.toLocaleString() : '-'}</td>`
-          + `<td class="val">${bytes.toLocaleString()}</td>`;
+        tr.innerHTML =
+          `<td class="key">${key}</td>` +
+          `<td class="val">${count !== null ? count.toLocaleString() : '-'}</td>` +
+          `<td class="val">${bytes.toLocaleString()}</td>`;
         tbody.appendChild(tr);
       }
 

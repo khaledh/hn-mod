@@ -15,29 +15,33 @@ export function intensity(value) {
   return Math.pow(Math.min(Math.log10(value) / MAX_LOG, 1), 4);
 }
 
-/** Apply color and weight based on intensity */
-function applyStyle(el, t) {
+/** Compute color and weight style for a given count value */
+export function intensityStyle(value) {
+  const t = intensity(value);
+  if (t <= 0) return {};
   const r = Math.round(BASE.r + (TARGET.r - BASE.r) * t);
   const g = Math.round(BASE.g + (TARGET.g - BASE.g) * t);
   const b = Math.round(BASE.b + (TARGET.b - BASE.b) * t);
-  el.style.color = `rgb(${r}, ${g}, ${b})`;
-  el.style.fontWeight = Math.round(400 + 500 * t);
+  return { color: `rgb(${r}, ${g}, ${b})`, fontWeight: Math.round(400 + 500 * t) };
 }
 
 /** Colorize all point scores and comment count links on the page */
 export function colorizePoints() {
-  // Point scores
   for (const el of document.querySelectorAll('span.score')) {
-    const points = parseInt(el.textContent);
-    const t = intensity(points);
-    if (t > 0) applyStyle(el, t);
+    const style = intensityStyle(parseInt(el.textContent));
+    if (style.color) {
+      el.style.color = style.color;
+      el.style.fontWeight = style.fontWeight;
+    }
   }
 
-  // Comment counts
   for (const el of document.querySelectorAll('td.subtext > span > a')) {
     const match = el.textContent.match(/(\d+)\s*comment/);
     if (!match) continue;
-    const t = intensity(parseInt(match[1]));
-    if (t > 0) applyStyle(el, t);
+    const style = intensityStyle(parseInt(match[1]));
+    if (style.color) {
+      el.style.color = style.color;
+      el.style.fontWeight = style.fontWeight;
+    }
   }
 }

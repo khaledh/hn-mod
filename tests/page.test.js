@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { isFrontPage, isListingPage } from '../src/page.js';
 
 // jsdom provides window.location; we override pathname via history API workaround

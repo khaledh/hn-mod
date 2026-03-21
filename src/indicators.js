@@ -4,19 +4,22 @@
 // Trend arrows show rank changes vs previous page load, fading similarly
 // but resetting to full intensity when the rank diff changes.
 
-import { isFrontPage, isListingPage, getPageRanks } from './page.js';
+import { isFrontPage, isListingPage, getPageRanks, currentPageNumber } from './page.js';
 import { adjustTitlesAndPersistDimming } from './dimming.js';
 import {
-  saveSeenStories, saveRankDiffs, savePageRanks, saveHiddenIds,
-  capMap, MAX_ENTRIES,
+  FADE_SEC,
+  saveSeenStories,
+  saveRankDiffs,
+  savePageRanks,
+  saveHiddenIds,
+  capMap,
+  MAX_ENTRIES,
 } from './storage.js';
-
-const FADE_SEC = 30 * 60; // 30 minutes
 
 /** Exponential decay: e^(-3t) where t is normalized age (0..1) */
 export function decay(ageSec) {
   if (ageSec >= FADE_SEC) return 0;
-  return Math.exp(-3 * ageSec / FADE_SEC);
+  return Math.exp((-3 * ageSec) / FADE_SEC);
 }
 
 // --- Rank diff computation ---
@@ -47,8 +50,8 @@ function computeRankDiffs(previousPageRanks, rankDiffChangedAt) {
   }
 
   // Cap to MAX_ENTRIES
-  capMap(previousPageRanks, MAX_ENTRIES, rank => rank);         // keep lowest ranks
-  capMap(rankDiffChangedAt, MAX_ENTRIES, entry => entry.t);     // keep newest
+  capMap(previousPageRanks, MAX_ENTRIES, (rank) => rank); // keep lowest ranks
+  capMap(rankDiffChangedAt, MAX_ENTRIES, (entry) => entry.t); // keep newest
 
   savePageRanks(previousPageRanks);
   saveRankDiffs(rankDiffChangedAt);
@@ -132,7 +135,8 @@ function addEmptyIndicatorToRow(tr) {
  * the correct page from the server (which has the right state post-hide) and
  * swapping in the correct last story.
  */
-async function fixWrongStoryOnPage(wrongNode, page, previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig) {
+async function fixWrongStoryOnPage(wrongNode, page, ctx) {
+  const { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig } = ctx;
   try {
     const res = await fetch(`${window.location.pathname}?p=${page}`);
     const html = await res.text();
@@ -150,11 +154,7 @@ async function fixWrongStoryOnPage(wrongNode, page, previousPageRanks, rankDiffC
     // so the "correct" last story is one already on our page — just remove
     // the wrong row instead of duplicating.
     if (document.getElementById(correctId)) {
-      const wrongSub = wrongNode.nextElementSibling;
-      const wrongSpacer = wrongSub?.nextElementSibling;
-      wrongNode.remove();
-      wrongSub?.remove();
-      wrongSpacer?.remove();
+      removeStoryRows(wrongNode);
       delete previousPageRanks[wrongId];
       savePageRanks(previousPageRanks);
       return;
@@ -202,7 +202,29 @@ async function fixWrongStoryOnPage(wrongNode, page, previousPageRanks, rankDiffC
       seenStories[correctId] = renderTimeSec;
       saveSeenStories(seenStories);
     }
-  } catch { /* ignore fetch errors */ }
+  } catch {
+    /* ignore fetch errors */
+  }
+}
+
+// --- DOM helpers ---
+
+/** Remove a story's three rows (title, subtext, spacer) from the DOM */
+export function removeStoryRows(trTitle) {
+  const trSub = trTitle.nextElementSibling;
+  const trSpacer = trSub?.nextElementSibling;
+  trTitle.remove();
+  trSub?.remove();
+  trSpacer?.remove();
+}
+
+/** Hide a story's three rows immediately (used to suppress flicker) */
+function hideStoryRows(trTitle) {
+  trTitle.style.display = 'none';
+  const trSub = trTitle.nextElementSibling;
+  if (trSub) trSub.style.display = 'none';
+  const trSpacer = trSub?.nextElementSibling;
+  if (trSpacer) trSpacer.style.display = 'none';
 }
 
 // --- Entry points ---
@@ -221,7 +243,10 @@ export function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, 
     if (tr.classList.contains('athing')) {
       const entryId = tr.getAttribute('id');
       const diffs = frontPage ? rankDiffChangedAt : {};
-      tr.insertBefore(buildIndicatorCell(entryId, diffs, seenStories, renderTimeSec), tr.firstChild);
+      tr.insertBefore(
+        buildIndicatorCell(entryId, diffs, seenStories, renderTimeSec),
+        tr.firstChild,
+      );
     } else {
       addEmptyIndicatorToRow(tr);
     }
@@ -293,19 +318,58 @@ function markVisibleStoriesAsSeen(seenStories) {
   if (updated) saveSeenStories(seenStories);
 }
 
+// --- Mutation observer ---
+
+/** Handle rank adjustments when stories are hidden on front pages */
+function handleHideRankAdjustments(
+  removedIds,
+  previousPageRanks,
+  hiddenIds,
+  suppressHiddenTracking,
+) {
+  // Track hidden story IDs (skip during pagination fix replacements)
+  if (!suppressHiddenTracking) {
+    for (const id of removedIds) hiddenIds.add(id);
+    if (removedIds.length > 0) saveHiddenIds(hiddenIds);
+  }
+
+  // Decrement ranks of all stories below each removed story to suppress
+  // false +1 diffs caused by personal hide actions
+  for (const removedId of removedIds) {
+    const removedRank = previousPageRanks[removedId];
+    if (removedRank !== undefined) {
+      for (const id of Object.keys(previousPageRanks)) {
+        if (previousPageRanks[id] > removedRank) previousPageRanks[id]--;
+      }
+      delete previousPageRanks[removedId];
+    }
+  }
+
+  // Merge current page ranks into the flat map
+  Object.assign(previousPageRanks, getPageRanks());
+  savePageRanks(previousPageRanks);
+}
+
 /**
  * Watch for dynamically added/removed rows (e.g. hiding stories) and maintain
  * indicator cells and rank tracking data.
  */
-export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds, dimmingConfig) {
+export function observeNewRows(
+  previousPageRanks,
+  rankDiffChangedAt,
+  seenStories,
+  hiddenIds,
+  dimmingConfig,
+) {
   const storyTable = document.querySelector('tr.athing')?.closest('table');
   if (!storyTable) return;
 
   let knownStoryIds = new Set(Object.keys(getPageRanks()));
   let pendingPageFix = false; // set when a hide is detected on page 2+
   let suppressHiddenTracking = false; // suppress during pagination fix replacements
+  const ctx = { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig };
 
-  const observer = new MutationObserver(mutations => {
+  const observer = new MutationObserver((mutations) => {
     const renderTimeSec = Math.floor(Date.now() / 1000);
     const addedStoryNodes = [];
 
@@ -338,50 +402,26 @@ export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories
     // Adjust rank tracking when stories are hidden (front pages only)
     if (isFrontPage()) {
       const currentIds = new Set(Object.keys(getPageRanks()));
-      const removedIds = [...knownStoryIds].filter(id => !currentIds.has(id));
+      const removedIds = [...knownStoryIds].filter((id) => !currentIds.has(id));
 
-      // Track hidden story IDs (skip during pagination fix replacements)
-      if (!suppressHiddenTracking) {
-        for (const id of removedIds) hiddenIds.add(id);
-        if (removedIds.length > 0) saveHiddenIds(hiddenIds);
-      }
-
-      // Decrement ranks of all stories below each removed story to suppress
-      // false +1 diffs caused by personal hide actions
-      for (const removedId of removedIds) {
-        const removedRank = previousPageRanks[removedId];
-        if (removedRank !== undefined) {
-          for (const id of Object.keys(previousPageRanks)) {
-            if (previousPageRanks[id] > removedRank) previousPageRanks[id]--;
-          }
-          delete previousPageRanks[removedId];
-        }
-      }
-
-      // Merge current page ranks into the flat map
-      Object.assign(previousPageRanks, getPageRanks());
+      handleHideRankAdjustments(removedIds, previousPageRanks, hiddenIds, suppressHiddenTracking);
       knownStoryIds = currentIds;
-      savePageRanks(previousPageRanks);
 
       // Fix HN's pagination bug: on page 2+, HN adds the wrong story after a
       // hide. The removal and addition often arrive in separate observer batches,
       // so we use a flag to bridge them.
-      const page = parseInt(new URLSearchParams(window.location.search).get('p') || '1');
+      const page = currentPageNumber();
       if (page > 1 && removedIds.length > 0) {
         pendingPageFix = true;
       }
       if (pendingPageFix && addedStoryNodes.length > 0) {
         pendingPageFix = false;
         const wrongNode = addedStoryNodes[addedStoryNodes.length - 1];
-        // Hide wrong rows immediately to prevent flicker during async fetch
-        const wrongSub = wrongNode.nextElementSibling;
-        const wrongSpacer = wrongSub?.nextElementSibling;
-        wrongNode.style.display = 'none';
-        if (wrongSub) wrongSub.style.display = 'none';
-        if (wrongSpacer) wrongSpacer.style.display = 'none';
+        hideStoryRows(wrongNode);
         suppressHiddenTracking = true;
-        fixWrongStoryOnPage(wrongNode, page, previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig)
-          .finally(() => { suppressHiddenTracking = false; });
+        fixWrongStoryOnPage(wrongNode, page, ctx).finally(() => {
+          suppressHiddenTracking = false;
+        });
       }
     }
   });

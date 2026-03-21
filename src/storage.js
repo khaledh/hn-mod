@@ -6,7 +6,7 @@ export const CHUNK_SIZE = 800;
 export const MAX_SEEN_IDS = SEEN_CHUNKS * CHUNK_SIZE; // 2400
 export const PRUNE_AGE_SEC = 72 * 60 * 60; // 72 hours
 
-const FADE_SEC = 30 * 60; // 30 minutes
+export const FADE_SEC = 30 * 60; // 30 minutes
 
 // --- Seen stories ---
 // Storage: split across multiple keys to stay under 8KB per-item limit:
@@ -16,7 +16,9 @@ const FADE_SEC = 30 * 60; // 30 minutes
 //   timestamp = still fading (within 30 min), true = seen and fully faded
 
 /** Seen chunk key names */
-export function seenChunkKey(i) { return `seenIds_${i}`; }
+export function seenChunkKey(i) {
+  return `seenIds_${i}`;
+}
 
 /** Load seen data from chunked storage keys into a single in-memory map */
 export function loadSeenStories(items) {
@@ -69,8 +71,6 @@ export function saveSeenStories(seenStories) {
     data[seenChunkKey(i)] = ids.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
   }
 
-  // Remove legacy single key if present
-  chrome.storage.sync.remove('seenIds');
   chrome.storage.sync.set(data);
 }
 
@@ -116,31 +116,6 @@ export function saveHiddenIds(hiddenIds) {
   chrome.storage.sync.set({ hiddenIds: arr });
 }
 
-/** Merge story IDs from the current /hidden page into the local set,
- *  and listen for un-hide clicks to remove IDs from storage. */
-export function syncHiddenIdsFromPage(hiddenIds) {
-  let changed = false;
-  for (const row of document.querySelectorAll('tr.athing')) {
-    const id = row.getAttribute('id');
-    if (id && !hiddenIds.has(id)) {
-      hiddenIds.add(id);
-      changed = true;
-    }
-  }
-  if (changed) saveHiddenIds(hiddenIds);
-
-  // Catch un-hide clicks before page navigates/reloads
-  document.addEventListener('click', (e) => {
-    const link = e.target.closest('a[href*="hide?"]');
-    if (!link) return;
-    const match = link.href.match(/id=(\d+)/);
-    if (match && hiddenIds.has(match[1])) {
-      hiddenIds.delete(match[1]);
-      saveHiddenIds(hiddenIds);
-    }
-  });
-}
-
 // --- Maintenance ---
 
 /** Trim an array to the last `max` entries (queue semantics: oldest removed first) */
@@ -173,12 +148,18 @@ export function pruneOldRanks(seenStories, previousPageRanks) {
 /** Load all extension data from sync storage */
 export function loadAll(callback) {
   const defaults = {
-    ciKeywords: [], csKeywords: [], domains: [],
-    dimmedEntries: [], undimmedEntries: [],
-    previousPageRanks: {}, rankDiffChangedAt: {},
-    recentlySeen: {}, hiddenIds: [], showUnseen: true,
-    seenIds: null,      // legacy single-key format
-    seenStories: null,  // legacy compact format
+    ciKeywords: [],
+    csKeywords: [],
+    domains: [],
+    dimmedEntries: [],
+    undimmedEntries: [],
+    previousPageRanks: {},
+    rankDiffChangedAt: {},
+    recentlySeen: {},
+    hiddenIds: [],
+    showUnseen: true,
+    seenIds: null, // legacy single-key format
+    seenStories: null, // legacy compact format
   };
   // Add chunk keys
   for (let i = 0; i < SEEN_CHUNKS; i++) {

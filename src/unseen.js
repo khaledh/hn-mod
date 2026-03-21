@@ -5,15 +5,15 @@
 // Story details are fetched lazily when the section is expanded.
 // Rows are styled identically to HN's native story rows, with indicators.
 
-import { isListingPage } from './page.js';
-import { buildIndicatorCell, addSeenLinks } from './indicators.js';
-import { intensity } from './colorize.js';
+import { isListingPage, currentPageNumber } from './page.js';
+import { buildIndicatorCell, addSeenLinks, removeStoryRows } from './indicators.js';
+import { intensityStyle } from './colorize.js';
 import { adjustTitlesAndPersistDimming } from './dimming.js';
-import { saveHiddenIds } from './storage.js';
+import { FADE_SEC, saveHiddenIds } from './storage.js';
+import { fetchTopStoryIds, fetchStory, fetchAuthToken } from './api.js';
 
-const API_BASE = 'https://hacker-news.firebaseio.com/v0';
 const MAX_UNSEEN_SHOWN = 5;
-const FADE_SEC = 30 * 60; // 30 minutes — must match indicators.js
+const STORIES_PER_PAGE = 30;
 
 /** Format Unix timestamp as relative time (e.g. "3 hours ago") */
 function timeAgo(unixTime) {
@@ -25,42 +25,6 @@ function timeAgo(unixTime) {
   if (hrs < 24) return `${hrs} hour${hrs !== 1 ? 's' : ''} ago`;
   const days = Math.floor(hrs / 24);
   return `${days} day${days !== 1 ? 's' : ''} ago`;
-}
-
-async function fetchTopStoryIds() {
-  const res = await fetch(`${API_BASE}/topstories.json`);
-  return res.json();
-}
-
-async function fetchStory(id) {
-  const res = await fetch(`${API_BASE}/item/${id}.json`);
-  return res.json();
-}
-
-/** Fetch a story's item page and extract its per-story auth token from the hide link */
-async function fetchAuthToken(id) {
-  try {
-    const res = await fetch(`https://news.ycombinator.com/item?id=${id}`);
-    const html = await res.text();
-    const match = html.match(new RegExp(`hide\\?id=${id}&(?:amp;)?auth=([a-f0-9]+)`));
-    return match ? match[1] : null;
-  } catch {
-    return null;
-  }
-}
-
-// --- Color helpers (shared with colorize.js via intensity()) ---
-
-const BASE = { r: 130, g: 130, b: 130 };
-const TARGET = { r: 0, g: 119, b: 119 };
-
-function intensityStyle(value) {
-  const t = intensity(value);
-  if (t <= 0) return {};
-  const r = Math.round(BASE.r + (TARGET.r - BASE.r) * t);
-  const g = Math.round(BASE.g + (TARGET.g - BASE.g) * t);
-  const b = Math.round(BASE.b + (TARGET.b - BASE.b) * t);
-  return { color: `rgb(${r}, ${g}, ${b})`, fontWeight: Math.round(400 + 500 * t) };
 }
 
 // --- Action links (added after auth tokens load) ---
@@ -85,7 +49,7 @@ function addActionLinks(tdSubtext, story, authToken, hiddenIds, id, trTitle) {
         trTitle.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
 
         const mainHideLink = document.querySelector(
-          `tr.athing[id="${id}"] ~ tr a.clicky[href^="hide?id=${id}&"]`
+          `tr.athing[id="${id}"] ~ tr a.clicky[href^="hide?id=${id}&"]`,
         );
         if (mainHideLink && mainHideLink.closest('.hn-mod-unseen') === null) {
           mainHideLink.click();
@@ -101,7 +65,7 @@ function addActionLinks(tdSubtext, story, authToken, hiddenIds, id, trTitle) {
 
 // --- Row building (matches HN's native DOM structure) ---
 
-function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
+function buildStoryRows(story, rank, seenStories) {
   const id = String(story.id);
   const renderTimeSec = Math.floor(Date.now() / 1000);
 
@@ -110,10 +74,8 @@ function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
   trTitle.className = 'athing';
   trTitle.id = id;
 
-  // Indicator cell
   trTitle.appendChild(buildIndicatorCell(id, {}, seenStories, renderTimeSec));
 
-  // Rank
   const tdRank = document.createElement('td');
   tdRank.className = 'title';
   tdRank.setAttribute('valign', 'top');
@@ -124,13 +86,11 @@ function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
   tdRank.appendChild(rankSpan);
   trTitle.appendChild(tdRank);
 
-  // Vote links placeholder
   const tdVote = document.createElement('td');
   tdVote.className = 'votelinks';
   tdVote.setAttribute('valign', 'top');
   trTitle.appendChild(tdVote);
 
-  // Title cell
   const tdTitle = document.createElement('td');
   tdTitle.className = 'title';
   const titleLine = document.createElement('span');
@@ -148,7 +108,9 @@ function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
       sitebit.className = 'sitebit comhead';
       sitebit.innerHTML = ` (<a href="from?site=${host}"><span class="sitestr">${host}</span></a>)`;
       titleLine.appendChild(sitebit);
-    } catch { /* skip */ }
+    } catch {
+      /* skip invalid URLs */
+    }
   }
 
   tdTitle.appendChild(titleLine);
@@ -156,17 +118,12 @@ function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
 
   // Subtext row
   const trSub = document.createElement('tr');
+  trSub.appendChild(document.createElement('td')); // indicator column spacer
 
-  // Empty cell for indicator column
-  const tdEmpty1 = document.createElement('td');
-  trSub.appendChild(tdEmpty1);
+  const tdEmpty = document.createElement('td');
+  tdEmpty.setAttribute('colspan', '2');
+  trSub.appendChild(tdEmpty);
 
-  // Colspan cell for rank + vote
-  const tdEmpty2 = document.createElement('td');
-  tdEmpty2.setAttribute('colspan', '2');
-  trSub.appendChild(tdEmpty2);
-
-  // Subtext cell
   const tdSubtext = document.createElement('td');
   tdSubtext.className = 'subtext';
 
@@ -187,12 +144,9 @@ function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
   byLink.textContent = story.by;
   tdSubtext.appendChild(byLink);
 
-  // Time ago
   if (story.time) {
     tdSubtext.appendChild(document.createTextNode(` ${timeAgo(story.time)} `));
   }
-
-  // Action links added lazily after auth tokens load
 
   // Comments link
   if (story.descendants !== undefined) {
@@ -221,6 +175,153 @@ function buildStoryRows(story, rank, seenStories, authToken, hiddenIds) {
   return [trTitle, trSub, trSpacer];
 }
 
+// --- Pagination ---
+
+function addPaginationLinks(visibleCount) {
+  const moreLink = document.querySelector('a.morelink');
+  if (!moreLink) return;
+
+  moreLink.textContent = 'Next';
+
+  const page = currentPageNumber();
+  const totalPages = Math.max(Math.ceil(visibleCount / STORIES_PER_PAGE), page + 1);
+
+  const basePath = window.location.pathname || '/';
+  const td = document.createElement('td');
+  td.className = 'hn-mod-pagination';
+  td.style.paddingLeft = '10px';
+  for (let p = 1; p <= totalPages; p++) {
+    if (p > 1) td.appendChild(document.createTextNode('\u2003'));
+    if (p === page) {
+      const span = document.createElement('span');
+      span.textContent = p;
+      span.style.fontWeight = 'bold';
+      td.appendChild(span);
+    } else {
+      const a = document.createElement('a');
+      a.href = `${basePath}?p=${p}`;
+      a.textContent = p;
+      td.appendChild(a);
+    }
+  }
+  moreLink.closest('td').after(td);
+}
+
+// --- Unseen panel content loading ---
+
+/** Append a story row to the panel tbody and wire up its action links */
+async function appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingConfig) {
+  const [story, authToken] = await Promise.all([fetchStory(entry.id), fetchAuthToken(entry.id)]);
+  if (!story) return;
+
+  for (const row of buildStoryRows(story, entry.rank, seenStories)) {
+    tbody.appendChild(row);
+  }
+  if (authToken) {
+    const id = String(story.id);
+    const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
+    const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
+    if (tdSubtext) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
+  }
+  adjustTitlesAndPersistDimming(dimmingConfig);
+  addSeenLinks(seenStories);
+}
+
+/** Load initial stories into the panel */
+async function loadPanelContent(
+  content,
+  unseenEntries,
+  seenStories,
+  hiddenIds,
+  dimmingConfig,
+  summary,
+  details,
+) {
+  content.textContent = 'Loading...';
+
+  const shown = unseenEntries.slice(0, MAX_UNSEEN_SHOWN);
+  const overflow = unseenEntries.slice(MAX_UNSEEN_SHOWN);
+
+  const stories = await Promise.all(shown.map(({ id }) => fetchStory(id)));
+
+  content.textContent = '';
+
+  const table = document.createElement('table');
+  table.className = 'itemlist';
+  table.style.cssText = 'border-spacing: 0; border-collapse: collapse;';
+
+  const tbody = document.createElement('tbody');
+  for (let i = 0; i < stories.length; i++) {
+    const story = stories[i];
+    if (!story) continue;
+    for (const row of buildStoryRows(story, unseenEntries[i].rank, seenStories)) {
+      tbody.appendChild(row);
+    }
+  }
+
+  table.appendChild(tbody);
+  content.appendChild(table);
+
+  // Overflow message
+  let moreDiv = null;
+  function updateOverflowMsg() {
+    if (overflow.length > 0) {
+      if (!moreDiv) {
+        moreDiv = document.createElement('div');
+        moreDiv.className = 'hn-mod-unseen-more';
+        content.appendChild(moreDiv);
+      }
+      moreDiv.textContent = `${overflow.length} more new ${overflow.length === 1 ? 'story' : 'stories'}`;
+    } else if (moreDiv) {
+      moreDiv.remove();
+      moreDiv = null;
+    }
+  }
+  updateOverflowMsg();
+
+  // Fetch auth tokens in background, then add action links + dimming/seen
+  Promise.all(shown.map(({ id }) => fetchAuthToken(id))).then((authTokens) => {
+    for (let i = 0; i < stories.length; i++) {
+      if (!stories[i] || !authTokens[i]) continue;
+      const id = String(stories[i].id);
+      const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
+      const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
+      if (!tdSubtext) continue;
+      addActionLinks(tdSubtext, stories[i], authTokens[i], hiddenIds, id, tr);
+    }
+    adjustTitlesAndPersistDimming(dimmingConfig);
+    addSeenLinks(seenStories);
+  });
+
+  // Remove stories from the panel when marked as seen/hidden
+  let unseenCount = unseenEntries.length;
+  table.addEventListener('hn-mod-seen', (e) => {
+    const trTitle = e.target.closest('tr.athing');
+    if (!trTitle) return;
+    removeStoryRows(trTitle);
+
+    unseenCount--;
+    if (unseenCount > 0) {
+      summary.textContent = `${unseenCount} new ${unseenCount === 1 ? 'story' : 'stories'}`;
+      // Backfill from overflow
+      if (overflow.length > 0) {
+        const entry = overflow.shift();
+        updateOverflowMsg();
+        appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingConfig);
+      }
+    } else {
+      details.replaceWith(
+        Object.assign(document.createElement('div'), {
+          className: 'hn-mod-unseen',
+          textContent: 'No new stories',
+        }),
+      );
+    }
+  });
+}
+
+// --- Main entry point ---
+
 /**
  * Show a collapsible "unseen stories" section at the top of the page.
  * @param {Object} seenStories - in-memory seen map { id: timestamp | true }
@@ -237,42 +338,9 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
   const topIds = await fetchTopStoryIds();
 
   // Filter out hidden stories first, then assign user-facing ranks
-  const visibleIds = topIds.filter(id => !hiddenIds.has(String(id)));
+  const visibleIds = topIds.filter((id) => !hiddenIds.has(String(id)));
 
-  // Add pagination links
-  // We can't know exact page count from the API (HN backfills beyond top 500).
-  // Use visibleIds as a lower bound; ensure we always show at least currentPage + 1
-  // when a "More" link exists, so the user can always navigate forward.
-  const STORIES_PER_PAGE = 30;
-  const currentPage = parseInt(new URLSearchParams(window.location.search).get('p') || '1');
-  const hasMore = !!document.querySelector('a.morelink');
-  const totalPages = hasMore
-    ? Math.max(Math.ceil(visibleIds.length / STORIES_PER_PAGE), currentPage + 1)
-    : currentPage;
-  const moreLink = document.querySelector('a.morelink');
-  if (moreLink) moreLink.textContent = 'Next';
-  if (moreLink && totalPages > 1) {
-    const currentPage = parseInt(new URLSearchParams(window.location.search).get('p') || '1');
-    const basePath = window.location.pathname || '/';
-    const td = document.createElement('td');
-    td.className = 'hn-mod-pagination';
-    td.style.paddingLeft = '10px';
-    for (let p = 1; p <= totalPages; p++) {
-      if (p > 1) td.appendChild(document.createTextNode('\u2003'));
-      if (p === currentPage) {
-        const span = document.createElement('span');
-        span.textContent = p;
-        span.style.fontWeight = 'bold';
-        td.appendChild(span);
-      } else {
-        const a = document.createElement('a');
-        a.href = `${basePath}?p=${p}`;
-        a.textContent = p;
-        td.appendChild(a);
-      }
-    }
-    moreLink.closest('td').after(td);
-  }
+  addPaginationLinks(visibleIds.length);
 
   // Include stories that are unseen or still within the fade period
   const unseenEntries = [];
@@ -282,7 +350,6 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
     if (seen === undefined || (typeof seen === 'number' && nowSec - seen < FADE_SEC)) {
       unseenEntries.push({ id, rank: i + 1 });
     }
-    // seen === true or timestamp past fade → fully seen, skip
   }
 
   // Find insertion point
@@ -316,109 +383,15 @@ export async function showUnseenStories(seenStories, hiddenIds, dimmingConfig) {
   details.addEventListener('toggle', async () => {
     if (!details.open || loaded) return;
     loaded = true;
-
-    content.textContent = 'Loading...';
-
-    const shown = unseenEntries.slice(0, MAX_UNSEEN_SHOWN);
-    const overflow = unseenEntries.slice(MAX_UNSEEN_SHOWN);
-
-    const stories = await Promise.all(shown.map(({ id }) => fetchStory(id)));
-
-    content.textContent = '';
-
-    const table = document.createElement('table');
-    table.className = 'itemlist';
-    table.style.cssText = 'border-spacing: 0; border-collapse: collapse;';
-
-    const tbody = document.createElement('tbody');
-    for (let i = 0; i < stories.length; i++) {
-      const story = stories[i];
-      if (!story) continue;
-      for (const row of buildStoryRows(story, unseenEntries[i].rank, seenStories, null, hiddenIds)) {
-        tbody.appendChild(row);
-      }
-    }
-
-    table.appendChild(tbody);
-    content.appendChild(table);
-
-    let moreDiv = null;
-    function updateOverflowMsg() {
-      if (overflow.length > 0) {
-        if (!moreDiv) {
-          moreDiv = document.createElement('div');
-          moreDiv.className = 'hn-mod-unseen-more';
-          content.appendChild(moreDiv);
-        }
-        moreDiv.textContent = `${overflow.length} more new ${overflow.length === 1 ? 'story' : 'stories'}`;
-      } else if (moreDiv) {
-        moreDiv.remove();
-        moreDiv = null;
-      }
-    }
-    updateOverflowMsg();
-
-    // Fetch auth tokens in background, then add action links + dimming/seen
-    Promise.all(shown.map(({ id }) => fetchAuthToken(id))).then(authTokens => {
-      for (let i = 0; i < stories.length; i++) {
-        if (!stories[i] || !authTokens[i]) continue;
-        const id = String(stories[i].id);
-        const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
-        const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
-        if (!tdSubtext) continue;
-        addActionLinks(tdSubtext, stories[i], authTokens[i], hiddenIds, id, tr);
-      }
-      adjustTitlesAndPersistDimming(dimmingConfig);
-      addSeenLinks(seenStories);
-    });
-
-    /** Fetch and append the next overflow story to the panel */
-    async function backfillNext() {
-      if (overflow.length === 0) return;
-      const entry = overflow.shift();
-      updateOverflowMsg();
-
-      const [story, authToken] = await Promise.all([
-        fetchStory(entry.id),
-        fetchAuthToken(entry.id),
-      ]);
-      if (!story) return;
-
-      for (const row of buildStoryRows(story, entry.rank, seenStories, null, hiddenIds)) {
-        tbody.appendChild(row);
-      }
-      if (authToken) {
-        const id = String(story.id);
-        const tr = tbody.querySelector(`tr.athing[id="${id}"]`);
-        const tdSubtext = tr?.nextElementSibling?.querySelector('td.subtext');
-        if (tdSubtext) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
-      }
-      adjustTitlesAndPersistDimming(dimmingConfig);
-      addSeenLinks(seenStories);
-    }
-
-    // Remove stories from the panel when marked as seen/hidden
-    let unseenCount = unseenEntries.length;
-    table.addEventListener('hn-mod-seen', (e) => {
-      const trTitle = e.target.closest('tr.athing');
-      if (!trTitle) return;
-      const trSub = trTitle.nextElementSibling;
-      const trSpacer = trSub?.nextElementSibling;
-      trTitle.remove();
-      trSub?.remove();
-      trSpacer?.remove();
-
-      unseenCount--;
-      if (unseenCount > 0) {
-        summary.textContent = `${unseenCount} new ${unseenCount === 1 ? 'story' : 'stories'}`;
-        backfillNext();
-      } else {
-        details.replaceWith(Object.assign(document.createElement('div'), {
-          className: 'hn-mod-unseen',
-          textContent: 'No new stories',
-        }));
-      }
-    });
+    await loadPanelContent(
+      content,
+      unseenEntries,
+      seenStories,
+      hiddenIds,
+      dimmingConfig,
+      summary,
+      details,
+    );
   });
 
   storyTable.parentNode.insertBefore(details, storyTable);
