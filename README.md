@@ -1,7 +1,10 @@
 # Hacker News Mod chrome extension
 
-A Chrome extension that enhances Hacker News with story dimming, new/trending
-indicators, and an unseen stories panel.
+A Chrome extension that enhances Hacker News with favicons, new/trending
+indicators, keyword/domain dimming, score colorization, and an unseen stories
+panel.
+
+<img src="screenshot.png" width="800">
 
 ## Features
 
@@ -14,6 +17,7 @@ indicators, and an unseen stories panel.
   seen yet
 - **Score/comment colorization** — color intensity scales with points and
   comment count
+- **Favicons** — site icons next to story titles for quick visual scanning
 
 ## Installation
 
@@ -61,5 +65,3 @@ npm run format:check # verify formatting
 ```sh
 npm run package      # minified build + zip for publishing
 ```
-
-![image](https://github.com/khaledh/hn-mod/assets/2148408/2b9b50c6-1245-4b62-b6be-e2408f215e6f)

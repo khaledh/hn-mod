@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Hacker News Mod",
   "version": "1.0.0",
-  "description": "Adds new story indicators, rank trends, story dimming, and an unseen stories panel to Hacker News.",
+  "description": "Enahnces Hacker News with new story indicators, rank trends, site icons, story dimming, and an unseen stories panel.",
   "permissions": [
     "activeTab", "storage"
   ],
