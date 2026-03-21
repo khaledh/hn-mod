@@ -42,8 +42,28 @@ describe('isListingPage', () => {
     expect(isListingPage()).toBe(true);
   });
 
+  it('returns true for /newest', () => {
+    setPath('/newest');
+    expect(isListingPage()).toBe(true);
+  });
+
+  it('returns true for /show', () => {
+    setPath('/show');
+    expect(isListingPage()).toBe(true);
+  });
+
   it('returns false for /item', () => {
     setPath('/item');
+    expect(isListingPage()).toBe(false);
+  });
+
+  it('returns false for /threads', () => {
+    setPath('/threads');
+    expect(isListingPage()).toBe(false);
+  });
+
+  it('returns false for /user', () => {
+    setPath('/user');
     expect(isListingPage()).toBe(false);
   });
 });

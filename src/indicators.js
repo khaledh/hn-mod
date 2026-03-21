@@ -5,6 +5,7 @@
 // but resetting to full intensity when the rank diff changes.
 
 import { isFrontPage, isListingPage, getPageRanks } from './page.js';
+import { adjustTitlesAndPersistDimming } from './dimming.js';
 import {
   saveSeenStories, saveRankDiffs, savePageRanks, saveHiddenIds,
   capMap, MAX_ENTRIES,
@@ -123,6 +124,87 @@ function addEmptyIndicatorToRow(tr) {
   }
 }
 
+// --- HN pagination bug fix ---
+
+/**
+ * On page 2+, HN's client-side JS adds the wrong story at the bottom after a
+ * hide (always picks the next story as if on page 1). We fix this by fetching
+ * the correct page from the server (which has the right state post-hide) and
+ * swapping in the correct last story.
+ */
+async function fixWrongStoryOnPage(wrongNode, page, previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig) {
+  try {
+    const res = await fetch(`${window.location.pathname}?p=${page}`);
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    const pageRows = doc.querySelectorAll('tr.athing');
+    const lastCorrectRow = pageRows[pageRows.length - 1];
+    if (!lastCorrectRow) return;
+
+    const correctId = lastCorrectRow.getAttribute('id');
+    const wrongId = wrongNode.getAttribute('id');
+    if (wrongId === correctId) return; // already correct
+
+    // On the last page, the server may return fewer stories after the hide,
+    // so the "correct" last story is one already on our page — just remove
+    // the wrong row instead of duplicating.
+    if (document.getElementById(correctId)) {
+      const wrongSub = wrongNode.nextElementSibling;
+      const wrongSpacer = wrongSub?.nextElementSibling;
+      wrongNode.remove();
+      wrongSub?.remove();
+      wrongSpacer?.remove();
+      delete previousPageRanks[wrongId];
+      savePageRanks(previousPageRanks);
+      return;
+    }
+
+    // Extract the three rows (title, subtext, spacer) from the parsed page
+    const correctSub = lastCorrectRow.nextElementSibling;
+    const correctSpacer = correctSub?.nextElementSibling;
+
+    const newTitleRow = document.adoptNode(lastCorrectRow);
+    const newSubRow = correctSub ? document.adoptNode(correctSub) : null;
+    const newSpacerRow = correctSpacer ? document.adoptNode(correctSpacer) : null;
+
+    // Add indicator cell before inserting (prevents re-processing by observer).
+    // Don't call addEmptyIndicatorToRow here — the observer will handle the
+    // subtext/spacer rows when they're inserted, avoiding double colspan increment.
+    const renderTimeSec = Math.floor(Date.now() / 1000);
+    newTitleRow.insertBefore(
+      buildIndicatorCell(correctId, rankDiffChangedAt, seenStories, renderTimeSec),
+      newTitleRow.firstChild,
+    );
+
+    // Replace wrong rows in the DOM
+    const wrongSub = wrongNode.nextElementSibling;
+    const wrongSpacer = wrongSub?.nextElementSibling;
+
+    wrongNode.replaceWith(newTitleRow);
+    if (wrongSub && newSubRow) wrongSub.replaceWith(newSubRow);
+    if (wrongSpacer && newSpacerRow) wrongSpacer.replaceWith(newSpacerRow);
+
+    // Apply dimming and seen links to the new row
+    if (dimmingConfig) adjustTitlesAndPersistDimming(dimmingConfig);
+    addSeenLinks(seenStories);
+
+    // Update rank tracking
+    delete previousPageRanks[wrongId];
+    const rankEl = newTitleRow.querySelector('span.rank');
+    if (rankEl) {
+      const rank = parseInt(rankEl.textContent);
+      if (!isNaN(rank)) previousPageRanks[correctId] = rank;
+    }
+    savePageRanks(previousPageRanks);
+
+    if (correctId && seenStories[correctId] === undefined) {
+      seenStories[correctId] = renderTimeSec;
+      saveSeenStories(seenStories);
+    }
+  } catch { /* ignore fetch errors */ }
+}
+
 // --- Entry points ---
 
 /** Insert indicator cells for all story rows and mark stories as seen */
@@ -148,6 +230,53 @@ export function markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, 
   markVisibleStoriesAsSeen(seenStories);
 }
 
+/** Add "seen" links to all story subtext rows */
+export function addSeenLinks(seenStories) {
+  for (const trTitle of document.querySelectorAll('tr.athing')) {
+    const entryId = trTitle.getAttribute('id');
+    if (!entryId) continue;
+
+    const trSub = trTitle.nextElementSibling;
+    const tdSubtext = trSub?.querySelector('td.subtext');
+    if (!tdSubtext || tdSubtext.querySelector('.seenLink')) continue;
+
+    // Only show for stories that aren't already fully seen
+    if (seenStories[entryId] === true) continue;
+
+    const link = document.createElement('a');
+    link.href = '#';
+    link.className = 'seenLink';
+    link.textContent = 'seen';
+    link.onclick = (e) => {
+      e.preventDefault();
+      seenStories[entryId] = true;
+      saveSeenStories(seenStories);
+
+      // Update all rows with this story ID (main page + unseen panel)
+      for (const row of document.querySelectorAll(`tr.athing[id="${entryId}"]`)) {
+        const dot = row.querySelector('.hn-mod-dot');
+        if (dot) {
+          dot.style.opacity = '0.00';
+          dot.style.fontSize = '12.0px';
+        }
+
+        row.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
+
+        // Remove seen link from this row's subtext
+        const seenLink = row.nextElementSibling?.querySelector('.seenLink');
+        if (seenLink) {
+          const prevText = seenLink.previousSibling;
+          if (prevText?.nodeType === Node.TEXT_NODE) prevText.remove();
+          seenLink.remove();
+        }
+      }
+    };
+
+    tdSubtext.appendChild(document.createTextNode(' | '));
+    tdSubtext.appendChild(link);
+  }
+}
+
 /** Record all currently visible stories as seen */
 function markVisibleStoriesAsSeen(seenStories) {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -168,14 +297,17 @@ function markVisibleStoriesAsSeen(seenStories) {
  * Watch for dynamically added/removed rows (e.g. hiding stories) and maintain
  * indicator cells and rank tracking data.
  */
-export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds) {
+export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds, dimmingConfig) {
   const storyTable = document.querySelector('tr.athing')?.closest('table');
   if (!storyTable) return;
 
   let knownStoryIds = new Set(Object.keys(getPageRanks()));
+  let pendingPageFix = false; // set when a hide is detected on page 2+
+  let suppressHiddenTracking = false; // suppress during pagination fix replacements
 
   const observer = new MutationObserver(mutations => {
     const renderTimeSec = Math.floor(Date.now() / 1000);
+    const addedStoryNodes = [];
 
     for (const { addedNodes } of mutations) {
       for (const node of addedNodes) {
@@ -190,10 +322,17 @@ export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories
             seenStories[entryId] = renderTimeSec;
             saveSeenStories(seenStories);
           }
+          addedStoryNodes.push(node);
         } else {
           addEmptyIndicatorToRow(node);
         }
       }
+    }
+
+    // Apply dimming and seen links to newly added stories
+    if (addedStoryNodes.length > 0) {
+      adjustTitlesAndPersistDimming(dimmingConfig);
+      addSeenLinks(seenStories);
     }
 
     // Adjust rank tracking when stories are hidden (front pages only)
@@ -201,9 +340,11 @@ export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories
       const currentIds = new Set(Object.keys(getPageRanks()));
       const removedIds = [...knownStoryIds].filter(id => !currentIds.has(id));
 
-      // Track hidden story IDs
-      for (const id of removedIds) hiddenIds.add(id);
-      if (removedIds.length > 0) saveHiddenIds(hiddenIds);
+      // Track hidden story IDs (skip during pagination fix replacements)
+      if (!suppressHiddenTracking) {
+        for (const id of removedIds) hiddenIds.add(id);
+        if (removedIds.length > 0) saveHiddenIds(hiddenIds);
+      }
 
       // Decrement ranks of all stories below each removed story to suppress
       // false +1 diffs caused by personal hide actions
@@ -221,6 +362,27 @@ export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories
       Object.assign(previousPageRanks, getPageRanks());
       knownStoryIds = currentIds;
       savePageRanks(previousPageRanks);
+
+      // Fix HN's pagination bug: on page 2+, HN adds the wrong story after a
+      // hide. The removal and addition often arrive in separate observer batches,
+      // so we use a flag to bridge them.
+      const page = parseInt(new URLSearchParams(window.location.search).get('p') || '1');
+      if (page > 1 && removedIds.length > 0) {
+        pendingPageFix = true;
+      }
+      if (pendingPageFix && addedStoryNodes.length > 0) {
+        pendingPageFix = false;
+        const wrongNode = addedStoryNodes[addedStoryNodes.length - 1];
+        // Hide wrong rows immediately to prevent flicker during async fetch
+        const wrongSub = wrongNode.nextElementSibling;
+        const wrongSpacer = wrongSub?.nextElementSibling;
+        wrongNode.style.display = 'none';
+        if (wrongSub) wrongSub.style.display = 'none';
+        if (wrongSpacer) wrongSpacer.style.display = 'none';
+        suppressHiddenTracking = true;
+        fixWrongStoryOnPage(wrongNode, page, previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig)
+          .finally(() => { suppressHiddenTracking = false; });
+      }
     }
   });
 

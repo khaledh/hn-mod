@@ -6,9 +6,15 @@ export function isFrontPage() {
   return path === '/' || path === '/news';
 }
 
-/** Listing pages show story rows (everything except /item comment pages) */
+/** Listing pages show ranked story rows */
+const LISTING_PATHS = ['/', '/news', '/newest', '/front', '/show', '/shownew', '/ask', '/active', '/best', '/noobstories', '/classic', '/invited', '/pool', '/launches'];
 export function isListingPage() {
-  return window.location.pathname !== '/item';
+  return LISTING_PATHS.includes(window.location.pathname);
+}
+
+/** The /hidden page lists stories the user has hidden */
+export function isHiddenPage() {
+  return window.location.pathname === '/hidden';
 }
 
 /** Read displayed rank numbers from all story rows on the current page */

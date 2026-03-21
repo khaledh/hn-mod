@@ -122,9 +122,13 @@ export function adjustTitlesAndPersistDimming(config) {
       dimLink.onclick = (e) => {
         e.preventDefault();
         const isDimming = dimLink.innerText === 'dim';
-        applyDimming(els, isDimming);
+        // Apply to all rows with the same story ID (main feed + unseen panel)
+        for (const row of document.querySelectorAll(`tr.athing[id="${els.entryId}"]`)) {
+          applyDimming(getStoryElements(row), isDimming);
+          const link = row.nextElementSibling?.querySelector('.dimLink');
+          if (link) link.innerText = isDimming ? 'undim' : 'dim';
+        }
         persistDimState(els.entryId, isDimming, dimmedEntries, undimmedEntries);
-        dimLink.innerText = isDimming ? 'undim' : 'dim';
       };
     }
   }

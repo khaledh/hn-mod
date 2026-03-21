@@ -28,7 +28,7 @@ tr.athing > td {
 .hn-mod-unseen {
     margin: 0 8px 8px 8px;
     padding: 4px 8px;
-    background: #f6f6ef;
+    background: #f0ede4;
     border: 1px solid #e0d8cc;
     border-radius: 3px;
 }
@@ -42,4 +42,9 @@ tr.athing > td {
 .hn-mod-unseen-content {
     font-size: 10pt;
     color: #828282;
+}
+.hn-mod-unseen-more {
+    font-size: 9pt;
+    color: #828282;
+    padding: 4px 0 2px;
 }
