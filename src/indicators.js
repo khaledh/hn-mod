@@ -6,7 +6,7 @@
 
 import { isFrontPage, isListingPage, getPageRanks } from './page.js';
 import {
-  saveSeenStories, saveRankDiffs, savePageRanks,
+  saveSeenStories, saveRankDiffs, savePageRanks, saveHiddenIds,
   capMap, MAX_ENTRIES,
 } from './storage.js';
 
@@ -56,7 +56,7 @@ function computeRankDiffs(previousPageRanks, rankDiffChangedAt) {
 // --- DOM rendering ---
 
 /** Build the indicator <td> for a story row (dot + optional trend arrow) */
-function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec) {
+export function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec) {
   const td = document.createElement('td');
   td.className = 'hn-mod-indicator-cell';
   if (!entryId) return td;
@@ -90,13 +90,14 @@ function buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeS
   }
 
   // New-story dot (always reserve space for alignment)
-  const seenAt = seenStories[entryId];
+  const seenVal = seenStories[entryId];
   let dotOpacity = 0;
-  if (!seenAt) {
-    dotOpacity = 1;
-  } else {
-    dotOpacity = decay(renderTimeSec - seenAt);
+  if (seenVal === undefined) {
+    dotOpacity = 1; // never seen
+  } else if (typeof seenVal === 'number') {
+    dotOpacity = decay(renderTimeSec - seenVal); // fading
   }
+  // else: seenVal === true → fully faded, opacity stays 0
 
   const dot = document.createElement('span');
   dot.textContent = '\u2022';
@@ -154,23 +155,20 @@ function markVisibleStoriesAsSeen(seenStories) {
 
   for (const row of document.querySelectorAll('.athing')) {
     const id = row.getAttribute('id');
-    if (id && !seenStories[id]) {
+    if (id && seenStories[id] === undefined) {
       seenStories[id] = nowSec;
       updated = true;
     }
   }
 
-  if (updated) {
-    capMap(seenStories, MAX_ENTRIES, ts => ts);
-    saveSeenStories(seenStories);
-  }
+  if (updated) saveSeenStories(seenStories);
 }
 
 /**
  * Watch for dynamically added/removed rows (e.g. hiding stories) and maintain
  * indicator cells and rank tracking data.
  */
-export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories) {
+export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds) {
   const storyTable = document.querySelector('tr.athing')?.closest('table');
   if (!storyTable) return;
 
@@ -188,7 +186,7 @@ export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories
           const entryId = node.getAttribute('id');
           const td = buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec);
           node.insertBefore(td, node.firstChild);
-          if (entryId && !seenStories[entryId]) {
+          if (entryId && seenStories[entryId] === undefined) {
             seenStories[entryId] = renderTimeSec;
             saveSeenStories(seenStories);
           }
@@ -202,6 +200,10 @@ export function observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories
     if (isFrontPage()) {
       const currentIds = new Set(Object.keys(getPageRanks()));
       const removedIds = [...knownStoryIds].filter(id => !currentIds.has(id));
+
+      // Track hidden story IDs
+      for (const id of removedIds) hiddenIds.add(id);
+      if (removedIds.length > 0) saveHiddenIds(hiddenIds);
 
       // Decrement ranks of all stories below each removed story to suppress
       // false +1 diffs caused by personal hide actions

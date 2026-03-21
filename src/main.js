@@ -4,20 +4,35 @@
 // each feature module: dimming, colorization, and new/trending indicators.
 
 import {
-  loadAll, expandSeenStories, expandRankDiffs,
-  capArray, pruneOldEntries,
+  loadAll, loadSeenStories, expandRankDiffs,
+  capArray, pruneOldRanks,
 } from './storage.js';
 import { adjustTitlesAndPersistDimming } from './dimming.js';
 import { colorizePoints } from './colorize.js';
 import { markNewAndTrendingStories, observeNewRows } from './indicators.js';
+import { showUnseenStories } from './unseen.js';
 
 loadAll((items) => {
-  const seenStories = expandSeenStories(items.seenStories);
+  let seenStories;
+
+  if (items.seenStories) {
+    // Migrate from legacy compact format: { timestamp: [id, ...] }
+    seenStories = {};
+    for (const [ts, ids] of Object.entries(items.seenStories)) {
+      const t = parseInt(ts);
+      for (const id of ids) seenStories[id] = t;
+    }
+    chrome.storage.sync.remove('seenStories');
+  } else {
+    seenStories = loadSeenStories(items.seenIds, items.recentlySeen);
+  }
+
   const rankDiffChangedAt = expandRankDiffs(items.rankDiffChangedAt);
+  const hiddenIds = new Set(items.hiddenIds.map(String));
 
   capArray(items.dimmedEntries);
   capArray(items.undimmedEntries);
-  pruneOldEntries(seenStories, items.previousPageRanks);
+  pruneOldRanks(seenStories, items.previousPageRanks);
 
   adjustTitlesAndPersistDimming({
     ciKeywords: items.ciKeywords,
@@ -30,5 +45,6 @@ loadAll((items) => {
   colorizePoints();
 
   markNewAndTrendingStories(items.previousPageRanks, rankDiffChangedAt, seenStories);
-  observeNewRows(items.previousPageRanks, rankDiffChangedAt, seenStories);
+  observeNewRows(items.previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds);
+  showUnseenStories(seenStories, hiddenIds);
 });

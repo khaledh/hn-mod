@@ -1,31 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  expandSeenStories, compactSeenStories,
+  loadSeenStories,
   expandRankDiffs, compactRankDiffs,
-  capArray, capMap, pruneOldEntries,
+  capArray, capMap,
 } from '../src/storage.js';
 
-describe('seenStories compact format', () => {
-  it('expands grouped timestamps to flat map', () => {
-    const compact = { '1000': ['a', 'b'], '2000': ['c'] };
-    expect(expandSeenStories(compact)).toEqual({ a: 1000, b: 1000, c: 2000 });
+describe('loadSeenStories', () => {
+  it('loads seenIds as true values', () => {
+    const result = loadSeenStories([111, 222], {});
+    expect(result).toEqual({ '111': true, '222': true });
   });
 
-  it('compacts flat map to grouped timestamps', () => {
-    const flat = { a: 1000, b: 1000, c: 2000 };
-    const result = compactSeenStories(flat);
-    expect(result['1000']).toEqual(expect.arrayContaining(['a', 'b']));
-    expect(result['2000']).toEqual(['c']);
+  it('loads recentlySeen with timestamps', () => {
+    const result = loadSeenStories([], { '5000': ['aaa', 'bbb'] });
+    expect(result).toEqual({ aaa: 5000, bbb: 5000 });
   });
 
-  it('roundtrips correctly', () => {
-    const original = { x: 100, y: 100, z: 200 };
-    expect(expandSeenStories(compactSeenStories(original))).toEqual(original);
+  it('recent timestamps overwrite seenIds entries', () => {
+    const result = loadSeenStories([111], { '5000': ['111'] });
+    expect(result).toEqual({ '111': 5000 });
   });
 
   it('handles empty input', () => {
-    expect(expandSeenStories({})).toEqual({});
-    expect(compactSeenStories({})).toEqual({});
+    expect(loadSeenStories([], {})).toEqual({});
   });
 });
 
@@ -70,18 +67,5 @@ describe('capMap', () => {
     const map = { a: 1, b: 5, c: 3, d: 2 };
     capMap(map, 2, v => v);
     expect(Object.keys(map).sort()).toEqual(['b', 'c']);
-  });
-});
-
-describe('pruneOldEntries', () => {
-  it('removes entries older than 72 hours', () => {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const seen = { old: nowSec - 300000, recent: nowSec - 100 };
-    const ranks = { old: 1, recent: 2, other: 3 };
-
-    pruneOldEntries(seen, ranks);
-
-    expect(seen).toEqual({ recent: nowSec - 100 });
-    expect(ranks).toEqual({ recent: 2, other: 3 });
   });
 });

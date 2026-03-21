@@ -23,3 +23,23 @@ tr.athing > td {
 .hn-mod-dot.has-arrow {
     margin-left: 3px;
 }
+
+/* Unseen stories panel */
+.hn-mod-unseen {
+    margin: 0 8px 8px 8px;
+    padding: 4px 8px;
+    background: #f6f6ef;
+    border: 1px solid #e0d8cc;
+    border-radius: 3px;
+}
+.hn-mod-unseen-summary {
+    cursor: pointer;
+    font-size: 10pt;
+    color: #828282;
+    padding: 4px 0;
+    user-select: none;
+}
+.hn-mod-unseen-content {
+    font-size: 10pt;
+    color: #828282;
+}
