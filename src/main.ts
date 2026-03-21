@@ -9,6 +9,7 @@ import { adjustTitlesAndPersistDimming } from './dimming.ts';
 import { colorizePoints } from './colorize.ts';
 import { markNewAndTrendingStories, observeNewRows, addSeenLinks } from './indicators.ts';
 import { showUnseenStories } from './unseen.ts';
+import { addFavicons } from './favicons.ts';
 
 loadAll((items) => {
   // Handles all formats: chunked (seenIds_0..N), legacy single (seenIds), legacy compact (seenStories)
@@ -42,6 +43,7 @@ loadAll((items) => {
     undimmedEntries: items.undimmedEntries,
   };
 
+  addFavicons();
   adjustTitlesAndPersistDimming(dimmingConfig);
   colorizePoints();
 
