@@ -25,6 +25,7 @@ export function addFavicons(): void {
     container.style.paddingLeft = '0.25em';
     container.appendChild(img);
 
+    link.target = '_blank';
     link.prepend(container);
   }
 }

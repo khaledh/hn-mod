@@ -68,7 +68,7 @@ function addActionLinks(
         trTitle.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
 
         const mainHideLink = document.querySelector<HTMLAnchorElement>(
-          `tr.athing[id="${id}"] ~ tr a.clicky[href^="hide?id=${id}&"]`,
+          `tr.athing[id="${id}"] ~ tr a[href^="hide?id=${id}&"]`,
         );
         if (mainHideLink && mainHideLink.closest('.hn-mod-unseen') === null) {
           mainHideLink.click();
@@ -326,6 +326,23 @@ async function loadPanelContent(
     if (!(target instanceof HTMLElement)) return;
     const trTitle = target.closest('tr.athing');
     if (!trTitle) return;
+
+    // Decrement ranks of stories below the removed one
+    const removedRankEl = trTitle.querySelector('span.rank');
+    const removedRank = removedRankEl ? parseInt(removedRankEl.textContent || '') : NaN;
+    if (!isNaN(removedRank)) {
+      for (const rankSpan of tbody.querySelectorAll('span.rank')) {
+        const rank = parseInt(rankSpan.textContent || '');
+        if (!isNaN(rank) && rank > removedRank) {
+          rankSpan.textContent = `${rank - 1}.`;
+        }
+      }
+      // Also adjust overflow entries that haven't been rendered yet
+      for (const entry of overflow) {
+        if (entry.rank > removedRank) entry.rank--;
+      }
+    }
+
     removeStoryRows(trTitle);
 
     unseenCount--;

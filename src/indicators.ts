@@ -6,6 +6,7 @@
 
 import { isFrontPage, isListingPage, getPageRanks, currentPageNumber } from './page.ts';
 import { adjustTitlesAndPersistDimming } from './dimming.ts';
+import { addFavicons } from './favicons.ts';
 import {
   FADE_SEC,
   saveSeenStories,
@@ -127,13 +128,17 @@ export function buildIndicatorCell(
 function addEmptyIndicatorToRow(tr: Element): void {
   if (tr.nodeType !== Node.ELEMENT_NODE || tr.tagName !== 'TR') return;
   if (tr.classList.contains('athing') || tr.querySelector('.hn-mod-indicator-cell')) return;
+  if ((tr as HTMLElement).dataset.hnModAligned) return;
 
   const colspanTd = tr.querySelector('td[colspan]');
   if (colspanTd) {
     const current = parseInt(colspanTd.getAttribute('colspan') || '1');
     colspanTd.setAttribute('colspan', String(current + 1));
+    (tr as HTMLElement).dataset.hnModAligned = '1';
   } else {
-    tr.insertBefore(document.createElement('td'), tr.firstChild);
+    const td = document.createElement('td');
+    td.className = 'hn-mod-indicator-cell';
+    tr.insertBefore(td, tr.firstChild);
   }
 }
 
@@ -210,7 +215,8 @@ async function fixWrongStoryOnPage(
     if (wrongSub && newSubRow) wrongSub.replaceWith(newSubRow);
     if (wrongSpacer && newSpacerRow) wrongSpacer.replaceWith(newSpacerRow);
 
-    // Apply dimming and seen links to the new row
+    // Apply favicons, dimming, and seen links to the new row
+    addFavicons();
     if (dimmingConfig) adjustTitlesAndPersistDimming(dimmingConfig);
     addSeenLinks(seenStories);
 
@@ -402,28 +408,41 @@ export function observeNewRows(
     const renderTimeSec = Math.floor(Date.now() / 1000);
     const addedStoryNodes: HTMLElement[] = [];
 
+    // Collect all added TR elements, including those nested inside containers
+    const addedRows: HTMLElement[] = [];
     for (const { addedNodes } of mutations) {
       for (const node of addedNodes) {
-        if (!(node instanceof HTMLElement) || node.tagName !== 'TR') continue;
-        if (node.querySelector('.hn-mod-indicator-cell')) continue;
-
-        if (node.classList.contains('athing')) {
-          const entryId = node.getAttribute('id');
-          const td = buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec);
-          node.insertBefore(td, node.firstChild);
-          if (entryId && seenStories[entryId] === undefined) {
-            seenStories[entryId] = renderTimeSec;
-            saveSeenStories(seenStories);
-          }
-          addedStoryNodes.push(node);
+        if (!(node instanceof HTMLElement)) continue;
+        if (node.tagName === 'TR') {
+          addedRows.push(node);
         } else {
-          addEmptyIndicatorToRow(node);
+          for (const tr of node.querySelectorAll<HTMLElement>('tr')) {
+            addedRows.push(tr);
+          }
         }
       }
     }
 
-    // Apply dimming and seen links to newly added stories
+    for (const row of addedRows) {
+      if (row.querySelector('.hn-mod-indicator-cell')) continue;
+
+      if (row.classList.contains('athing')) {
+        const entryId = row.getAttribute('id');
+        const td = buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec);
+        row.insertBefore(td, row.firstChild);
+        if (entryId && seenStories[entryId] === undefined) {
+          seenStories[entryId] = renderTimeSec;
+          saveSeenStories(seenStories);
+        }
+        addedStoryNodes.push(row);
+      } else {
+        addEmptyIndicatorToRow(row);
+      }
+    }
+
+    // Apply favicons, dimming, and seen links to newly added stories
     if (addedStoryNodes.length > 0) {
+      addFavicons();
       adjustTitlesAndPersistDimming(dimmingConfig);
       addSeenLinks(seenStories);
     }
