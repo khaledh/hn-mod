@@ -6,7 +6,7 @@ const ICON_SERVICE = 'https://icons.duckduckgo.com/ip3';
 
 /** Add favicon icons to all story title links on the page */
 export function addFavicons(): void {
-  for (const link of document.querySelectorAll<HTMLAnchorElement>('.titleline > a')) {
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('.titleline > a:not(:has(.hn-mod-favicon))')) {
     let domain: string;
     try {
       domain = new URL(link.href).hostname;

@@ -11,6 +11,7 @@ import { intensityStyle, type IntensityStyle } from './colorize.ts';
 import { adjustTitlesAndPersistDimming } from './dimming.ts';
 import { FADE_SEC, saveHiddenIds, type SeenStories, type DimmingConfig } from './storage.ts';
 import { fetchTopStoryIds, fetchStory, fetchAuthToken, type HNStory } from './api.ts';
+import { addFavicons } from './favicons.ts';
 
 function applyStyle(el: HTMLElement, style: IntensityStyle | null): void {
   if (!style) return;
@@ -244,6 +245,7 @@ async function appendStoryToPanel(
     const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
     if (tdSubtext && tr) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
   }
+  addFavicons();
   adjustTitlesAndPersistDimming(dimmingConfig);
   addSeenLinks(seenStories);
 }
@@ -282,6 +284,7 @@ async function loadPanelContent(
 
   table.appendChild(tbody);
   content.appendChild(table);
+  addFavicons();
 
   // Overflow message
   let moreDiv: HTMLDivElement | null = null;

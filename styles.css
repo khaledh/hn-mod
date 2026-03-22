@@ -1,3 +1,62 @@
+/* Custom HN styling */
+*, td {
+    font-family: 'Roboto', sans-serif;
+}
+
+div.toptext {
+    font-family: 'Roboto', sans-serif;
+    font-size: 9pt;
+}
+
+td {
+    color: #305737;
+}
+
+.titleline > a {
+    font-family: 'Roboto', sans-serif;
+    font-weight: 500;
+    font-size: 95%;
+}
+
+.subtext {
+    font-size: 65%;
+}
+
+a:visited {
+    color: #b86a6a;
+}
+
+.comment {
+    font-size: 9.5pt;
+}
+
+tr.spacer {
+    height: 9px !important;
+}
+
+/* spacing before a dimmed entry */
+tr.spacer:has(+tr.dimmed) {
+    height: 5px !important;
+}
+
+/* spacing after a dimmed entry (except before a non-dimmed entry) */
+tr.dimmed + tr + tr:not(:has(+tr.dimmed)) {
+    height: 7px !important;
+}
+
+.__rhn__options-bar, .__rhn__options-bar label, .__rhn__options-bar select {
+    font-size: 12px !important;
+}
+
+pre {
+    background: #eee;
+}
+
+code {
+    font-family: monospace;
+    font-size: 8pt;
+}
+
 /* Vertically center all cells in story rows */
 tr.athing > td {
     vertical-align: middle !important;
