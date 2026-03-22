@@ -401,7 +401,14 @@ export async function showUnseenStories(
   // Build collapsible section
   const details = document.createElement('details');
   details.className = 'hn-mod-unseen';
-  details.open = true;
+
+  // Restore collapse state (default: expanded)
+  const stored = await new Promise<Record<string, boolean>>((resolve) =>
+    chrome.storage.local.get({ unseenPanelOpen: true }, (items) =>
+      resolve(items as Record<string, boolean>),
+    ),
+  );
+  details.open = stored.unseenPanelOpen;
 
   const summary = document.createElement('summary');
   summary.className = 'hn-mod-unseen-summary';
@@ -412,9 +419,10 @@ export async function showUnseenStories(
   content.className = 'hn-mod-unseen-content';
   details.appendChild(content);
 
-  // Lazy-load story details on first expand
+  // Lazy-load story details on first expand, persist collapse state
   let loaded = false;
   details.addEventListener('toggle', async () => {
+    chrome.storage.local.set({ unseenPanelOpen: details.open });
     if (!details.open || loaded) return;
     loaded = true;
     await loadPanelContent(
