@@ -1,5 +1,7 @@
 // Options page — tabbed interface
 
+import { allChunkKeys } from './storage.ts';
+
 interface OptionsState {
   ci: string[];
   cs: string[];
@@ -145,24 +147,20 @@ function restoreOptions(): void {
 
 function resetTracking(): void {
   if (!confirm('Reset all tracking data? This cannot be undone.')) return;
-  chrome.storage.sync.remove(
-    [
-      'previousPageRanks',
-      'rankDiffChangedAt',
-      'seenIds',
-      'seenIds_0',
-      'seenIds_1',
-      'seenIds_2',
-      'recentlySeen',
-      'hiddenIds',
-      'seenStories',
-    ],
-    () => {
-      showStatus('reset-status', 'Reset complete');
-      loadStorageStats();
-      reloadHNTabs();
-    },
-  );
+  const keys = [
+    ...allChunkKeys(),
+    'recentlySeen',
+    'dismissedIds',
+    // Legacy keys
+    'seenIds',
+    'seenIds_0',
+    'seenStories',
+  ];
+  chrome.storage.sync.remove(keys, () => {
+    showStatus('reset-status', 'Reset complete');
+    loadStorageStats();
+    reloadHNTabs();
+  });
 }
 
 // --- Storage stats ---

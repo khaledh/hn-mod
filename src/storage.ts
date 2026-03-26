@@ -1,11 +1,14 @@
-// Chrome sync storage helpers with compact format conversion
+// Chrome sync storage helpers with auto-chunking for the 8KB per-item limit.
+//
+// Any storage key whose serialized value may exceed ~8KB is declared as a
+// ChunkedField.  The abstraction transparently splits values across multiple
+// storage keys (e.g. hiddenIds, hiddenIds_1, hiddenIds_2) and reassembles
+// them on load.  Chunk 0 always uses the bare key name so existing data
+// requires no migration.
 
 export const MAX_ENTRIES = 500;
-export const SEEN_CHUNKS = 3;
-export const CHUNK_SIZE = 800;
-export const MAX_SEEN_IDS = SEEN_CHUNKS * CHUNK_SIZE; // 2400
+export const MAX_SEEN_IDS = 2400;
 export const PRUNE_AGE_SEC = 72 * 60 * 60; // 72 hours
-
 export const FADE_SEC = 30 * 60; // 30 minutes
 
 // --- Shared types ---
@@ -27,89 +30,191 @@ export interface DimmingConfig {
   undimmedEntries: string[];
 }
 
+/** Bump this when the storage format changes to trigger a one-time migration */
+export const STORAGE_VERSION = 1;
+
 export interface StorageItems {
+  storageVersion: number;
   ciKeywords: string[];
   csKeywords: string[];
   domains: string[];
   dimmedEntries: string[];
   undimmedEntries: string[];
-  previousPageRanks: PageRanks;
-  rankDiffChangedAt: Record<string, string[]>;
   recentlySeen: Record<string, string[]>;
-  hiddenIds: number[];
   showUnseen: boolean;
-  seenIds: number[] | null;
-  seenStories: Record<string, string[]> | null;
-  [key: `seenIds_${number}`]: number[];
+  dismissedIds: number[];
+  seenIds: number[] | null; // legacy
+  seenStories: Record<string, string[]> | null; // legacy
+  seenIds_0: number[]; // legacy chunk key (migrated to bare "seenIds")
+  [key: string]: unknown;
 }
 
-// --- Seen stories ---
-// Storage: split across multiple keys to stay under 8KB per-item limit:
-//   seenIds_0, seenIds_1, ...: flat number arrays (~800 IDs each)
-//   recentlySeen: { timestamp: [id, ...], ... } — compact map (only stories still fading)
-// In-memory: { id: timestamp | true, ... }
-//   timestamp = still fading (within 30 min), true = seen and fully faded
+// --- Auto-chunking abstraction ---
 
-/** Seen chunk key names */
-export function seenChunkKey(i: number): `seenIds_${number}` {
-  return `seenIds_${i}`;
+/** Byte budget per chunk — leaves headroom below the 8,192-byte per-item limit */
+const CHUNK_BUDGET = 7800;
+
+/** Descriptor for a storage field that may be split across multiple keys */
+interface ChunkedField<TMemory, TChunk> {
+  key: string;
+  maxChunks: number;
+  emptyChunk: TChunk;
+  toStorage: (value: TMemory) => TChunk;
+  fromStorage: (chunks: TChunk[]) => TMemory;
+  split: (value: TChunk, budget: number) => TChunk[];
 }
 
-/** Load seen data from chunked storage keys into a single in-memory map */
-export function loadSeenStories(items: Partial<StorageItems>): SeenStories {
-  const map: SeenStories = {};
-  // Merge all chunks
-  for (let i = 0; i < SEEN_CHUNKS; i++) {
-    const chunk = items[seenChunkKey(i)] || [];
-    for (const id of chunk) map[String(id)] = true;
+/** Storage key for chunk `i` of a field: bare name for 0, name_N for N>0 */
+export function chunkKey(base: string, i: number): string {
+  return i === 0 ? base : `${base}_${i}`;
+}
+
+/**
+ * Split an array into sub-arrays that each serialize within `budget` bytes.
+ * Uses binary search on slice length for efficiency.
+ */
+export function splitArray<T>(arr: T[], budget: number): T[][] {
+  if (arr.length === 0) return [[]];
+  const result: T[][] = [];
+  let start = 0;
+  while (start < arr.length) {
+    let lo = 1;
+    let hi = arr.length - start;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >>> 1;
+      if (JSON.stringify(arr.slice(start, start + mid)).length <= budget) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    result.push(arr.slice(start, start + lo));
+    start += lo;
   }
-  // Migrate from legacy single-key format (seenIds)
-  if (items.seenIds) {
-    for (const id of items.seenIds) map[String(id)] = true;
+  return result;
+}
+
+/**
+ * Split a record into sub-records that each serialize within `budget` bytes.
+ * Entries are accumulated until the next would exceed the budget.
+ */
+export function splitRecord<V>(obj: Record<string, V>, budget: number): Record<string, V>[] {
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return [{}];
+  const result: Record<string, V>[] = [];
+  let current: Record<string, V> = {};
+  let currentSize = 2; // "{}" base
+  for (const [k, v] of entries) {
+    const entrySize = JSON.stringify(k).length + 1 + JSON.stringify(v).length + 1;
+    if (currentSize + entrySize > budget && Object.keys(current).length > 0) {
+      result.push(current);
+      current = {};
+      currentSize = 2;
+    }
+    current[k] = v;
+    currentSize += entrySize;
   }
-  // Migrate from legacy compact format (seenStories: { timestamp: [id, ...] })
-  if (items.seenStories) {
-    for (const [ts, ids] of Object.entries(items.seenStories)) {
-      const t = parseInt(ts);
-      for (const id of ids) map[id] = t;
+  if (Object.keys(current).length > 0) result.push(current);
+  return result;
+}
+
+/** Write a chunked field to storage, cleaning up stale chunk keys */
+function saveChunked<TMemory, TChunk>(
+  field: ChunkedField<TMemory, TChunk>,
+  value: TMemory,
+): void {
+  const serialized = field.toStorage(value);
+  const chunks = field.split(serialized, CHUNK_BUDGET);
+  if (chunks.length > field.maxChunks) chunks.length = field.maxChunks;
+
+  const data: Record<string, TChunk> = {};
+  const removeKeys: string[] = [];
+  for (let i = 0; i < field.maxChunks; i++) {
+    const key = chunkKey(field.key, i);
+    if (i < chunks.length) {
+      data[key] = chunks[i];
+    } else {
+      removeKeys.push(key);
     }
   }
-  // Recent entries overwrite with actual timestamps (for fade calculation)
-  const recentlySeen = items.recentlySeen || {};
-  for (const [ts, ids] of Object.entries(recentlySeen)) {
-    const t = parseInt(ts);
-    for (const id of ids) map[id] = t;
-  }
-  return map;
-}
-
-/** Save seen data, splitting IDs across chunked keys + recentlySeen */
-export function saveSeenStories(seenStories: SeenStories): void {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const ids: number[] = [];
-  const recent: Record<string, string[]> = {};
-
-  for (const [id, val] of Object.entries(seenStories)) {
-    ids.push(Number(id));
-    if (typeof val === 'number' && nowSec - val < FADE_SEC) {
-      const key = String(val);
-      (recent[key] ??= []).push(id);
-    }
-  }
-
-  // Cap IDs array (FIFO: remove oldest from front)
-  if (ids.length > MAX_SEEN_IDS) ids.splice(0, ids.length - MAX_SEEN_IDS);
-
-  // Split into chunks
-  const data: Record<string, string[] | Record<string, string[]> | number[]> = {
-    recentlySeen: recent,
-  };
-  for (let i = 0; i < SEEN_CHUNKS; i++) {
-    data[seenChunkKey(i)] = ids.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-  }
-
   chrome.storage.sync.set(data);
+  if (removeKeys.length > 0) chrome.storage.sync.remove(removeKeys);
 }
+
+/** Read a chunked field from the items returned by chrome.storage.sync.get */
+export function loadChunked<TMemory, TChunk>(
+  field: ChunkedField<TMemory, TChunk>,
+  items: Record<string, unknown>,
+): TMemory {
+  const chunks: TChunk[] = [];
+  for (let i = 0; i < field.maxChunks; i++) {
+    const val = items[chunkKey(field.key, i)] as TChunk | undefined;
+    if (val !== undefined && val !== null) chunks.push(val);
+  }
+  return field.fromStorage(chunks);
+}
+
+/** Generate defaults entries for all chunked field keys */
+function chunkedDefaults(): Record<string, unknown> {
+  const defaults: Record<string, unknown> = {};
+  for (const field of Object.values(chunkedFields)) {
+    for (let i = 0; i < field.maxChunks; i++) {
+      defaults[chunkKey(field.key, i)] = field.emptyChunk;
+    }
+  }
+  return defaults;
+}
+
+// --- Field descriptors ---
+
+export const chunkedFields = {
+  hiddenIds: {
+    key: 'hiddenIds',
+    maxChunks: 2,
+    emptyChunk: [] as number[],
+    toStorage: (ids: Set<string>): number[] => {
+      const arr = [...ids].map(Number);
+      if (arr.length > MAX_SEEN_IDS) arr.splice(0, arr.length - MAX_SEEN_IDS);
+      return arr;
+    },
+    fromStorage: (chunks: number[][]): Set<string> =>
+      new Set(chunks.flat().map(String)),
+    split: splitArray,
+  },
+  previousPageRanks: {
+    key: 'previousPageRanks',
+    maxChunks: 2,
+    emptyChunk: {} as PageRanks,
+    toStorage: (v: PageRanks): PageRanks => v,
+    fromStorage: (chunks: PageRanks[]): PageRanks => Object.assign({}, ...chunks),
+    split: splitRecord,
+  },
+  rankDiffChangedAt: {
+    key: 'rankDiffChangedAt',
+    maxChunks: 2,
+    emptyChunk: {} as Record<string, string[]>,
+    toStorage: (v: RankDiffMap): Record<string, string[]> => compactRankDiffs(v),
+    fromStorage: (chunks: Record<string, string[]>[]): RankDiffMap =>
+      expandRankDiffs(Object.assign({}, ...chunks)),
+    split: splitRecord,
+  },
+  seenIds: {
+    key: 'seenIds',
+    maxChunks: 4,
+    emptyChunk: [] as number[],
+    toStorage: (seenStories: SeenStories): number[] => {
+      const ids = Object.keys(seenStories).map(Number);
+      if (ids.length > MAX_SEEN_IDS) ids.splice(0, ids.length - MAX_SEEN_IDS);
+      return ids;
+    },
+    fromStorage: (chunks: number[][]): SeenStories => {
+      const map: SeenStories = {};
+      for (const id of chunks.flat()) map[String(id)] = true;
+      return map;
+    },
+    split: splitArray,
+  },
+} as const satisfies Record<string, ChunkedField<unknown, unknown>>;
 
 // --- Compact format: rankDiffChangedAt ---
 // Storage:  { "diff,timestamp": [id, ...], ... }
@@ -133,24 +238,93 @@ export function compactRankDiffs(flat: RankDiffMap): Record<string, string[]> {
   return grouped;
 }
 
+// --- Seen stories ---
+// Storage: seenIds (chunked number arrays) + recentlySeen (timestamp → IDs)
+// In-memory: { id: timestamp | true, ... }
+
+/** Load seen data from chunked storage keys into a single in-memory map */
+export function loadSeenStories(items: Partial<StorageItems>): SeenStories {
+  const map = loadChunked(chunkedFields.seenIds, items as Record<string, unknown>);
+  // Migrate from legacy seenIds_0 chunk key (old scheme used _0 for first chunk)
+  const legacyChunk0 = items.seenIds_0;
+  if (legacyChunk0) {
+    for (const id of legacyChunk0) map[String(id)] = true;
+  }
+  // Migrate from legacy single-key format (seenIds)
+  if (items.seenIds) {
+    for (const id of items.seenIds) map[String(id)] = true;
+  }
+  // Migrate from legacy compact format (seenStories: { timestamp: [id, ...] })
+  if (items.seenStories) {
+    for (const [ts, ids] of Object.entries(items.seenStories)) {
+      const t = parseInt(ts);
+      for (const id of ids) map[id] = t;
+    }
+  }
+  // Recent entries overwrite with actual timestamps (for fade calculation)
+  const recentlySeen = items.recentlySeen || {};
+  for (const [ts, ids] of Object.entries(recentlySeen)) {
+    const t = parseInt(ts);
+    for (const id of ids) map[id] = t;
+  }
+  return map;
+}
+
 // --- Persistence ---
 
+export function saveSeenStories(seenStories: SeenStories): void {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ids: number[] = [];
+  const recent: Record<string, string[]> = {};
+
+  for (const [id, val] of Object.entries(seenStories)) {
+    ids.push(Number(id));
+    if (typeof val === 'number' && nowSec - val < FADE_SEC) {
+      const key = String(val);
+      (recent[key] ??= []).push(id);
+    }
+  }
+
+  if (ids.length > MAX_SEEN_IDS) ids.splice(0, ids.length - MAX_SEEN_IDS);
+
+  const chunks = splitArray(ids, CHUNK_BUDGET);
+  if (chunks.length > chunkedFields.seenIds.maxChunks) {
+    chunks.length = chunkedFields.seenIds.maxChunks;
+  }
+
+  const data: Record<string, unknown> = { recentlySeen: recent };
+  const removeKeys: string[] = [];
+  for (let i = 0; i < chunkedFields.seenIds.maxChunks; i++) {
+    const key = chunkKey('seenIds', i);
+    if (i < chunks.length) {
+      data[key] = chunks[i];
+    } else {
+      removeKeys.push(key);
+    }
+  }
+
+  chrome.storage.sync.set(data);
+  if (removeKeys.length > 0) chrome.storage.sync.remove(removeKeys);
+}
+
 export function saveRankDiffs(rankDiffChangedAt: RankDiffMap): void {
-  chrome.storage.sync.set({ rankDiffChangedAt: compactRankDiffs(rankDiffChangedAt) });
+  saveChunked(chunkedFields.rankDiffChangedAt, rankDiffChangedAt);
 }
 
 export function savePageRanks(previousPageRanks: PageRanks): void {
-  chrome.storage.sync.set({ previousPageRanks });
+  saveChunked(chunkedFields.previousPageRanks, previousPageRanks);
 }
 
 export function saveDimState(dimmedEntries: string[], undimmedEntries: string[]): void {
   chrome.storage.sync.set({ dimmedEntries, undimmedEntries });
 }
 
+export function saveDismissedIds(dismissedIds: Set<string>): void {
+  chrome.storage.sync.set({ dismissedIds: [...dismissedIds].map(Number) });
+}
+
 export function saveHiddenIds(hiddenIds: Set<string>): void {
-  const arr = [...hiddenIds].map(Number);
-  if (arr.length > MAX_SEEN_IDS) arr.splice(0, arr.length - MAX_SEEN_IDS);
-  chrome.storage.sync.set({ hiddenIds: arr });
+  saveChunked(chunkedFields.hiddenIds, hiddenIds);
 }
 
 // --- Maintenance ---
@@ -175,7 +349,6 @@ export function pruneOldRanks(seenStories: SeenStories, previousPageRanks: PageR
   const nowSec = Math.floor(Date.now() / 1000);
   for (const id of Object.keys(previousPageRanks)) {
     const seenAt = seenStories[id];
-    // Prune if never seen, or if seen with a timestamp older than prune window
     if (seenAt === undefined || (typeof seenAt === 'number' && nowSec - seenAt > PRUNE_AGE_SEC)) {
       delete previousPageRanks[id];
     }
@@ -183,29 +356,66 @@ export function pruneOldRanks(seenStories: SeenStories, previousPageRanks: PageR
 }
 
 /** Build the defaults object for chrome.storage.sync.get */
-function storageDefaults(): Partial<StorageItems> {
-  const defaults: Partial<StorageItems> = {
+function storageDefaults(): Record<string, unknown> {
+  return {
+    storageVersion: 0,
+    // Simple (non-chunked) keys
     ciKeywords: [],
     csKeywords: [],
     domains: [],
     dimmedEntries: [],
     undimmedEntries: [],
-    previousPageRanks: {},
-    rankDiffChangedAt: {},
     recentlySeen: {},
-    hiddenIds: [],
     showUnseen: true,
+    dismissedIds: [],
     seenIds: null, // legacy single-key format
     seenStories: null, // legacy compact format
+    seenIds_0: [], // legacy chunk key (old scheme)
+    // Chunked keys
+    ...chunkedDefaults(),
   };
-  for (let i = 0; i < SEEN_CHUNKS; i++) {
-    defaults[seenChunkKey(i)] = [];
+}
+
+/** Collect all chunk key names for reset/cleanup */
+export function allChunkKeys(): string[] {
+  const keys: string[] = [];
+  for (const field of Object.values(chunkedFields)) {
+    for (let i = 0; i < field.maxChunks; i++) {
+      keys.push(chunkKey(field.key, i));
+    }
   }
-  return defaults;
+  return keys;
+}
+
+/**
+ * One-time migration: re-save all data in the chunked format and clean up
+ * legacy keys.  Called when storageVersion < STORAGE_VERSION.
+ */
+export function migrateStorage(
+  items: StorageItems,
+  seenStories: SeenStories,
+  hiddenIds: Set<string>,
+  previousPageRanks: PageRanks,
+  rankDiffChangedAt: RankDiffMap,
+): void {
+  // Re-save everything using the chunked format
+  saveSeenStories(seenStories);
+  saveHiddenIds(hiddenIds);
+  savePageRanks(previousPageRanks);
+  saveRankDiffs(rankDiffChangedAt);
+
+  // Remove legacy keys
+  const legacyKeys: string[] = [];
+  if (items.seenStories) legacyKeys.push('seenStories');
+  if (items.seenIds) legacyKeys.push('seenIds');
+  if (items.seenIds_0) legacyKeys.push('seenIds_0');
+  if (legacyKeys.length > 0) chrome.storage.sync.remove(legacyKeys);
+
+  // Stamp the version
+  chrome.storage.sync.set({ storageVersion: STORAGE_VERSION });
 }
 
 /** Load all extension data from sync storage */
 export function loadAll(callback: (items: StorageItems) => void): void {
-  // chrome.storage.sync.get returns { [key: string]: unknown }; we know the shape from defaults
   chrome.storage.sync.get(storageDefaults(), (items) => callback(items as unknown as StorageItems));
 }

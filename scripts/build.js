@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
 
-const STATIC_FILES = ['styles.css', 'options.html'];
+const STATIC_FILES = ['styles.css', 'options.html', 'icon16.png', 'icon48.png', 'icon128.png'];
 const STANDALONE_SCRIPTS = ['options', 'hot-reload'];
 
 function copyFiles(files, srcDir = ROOT) {
@@ -37,6 +37,7 @@ async function buildStandaloneScripts(isPackage, scripts) {
     await build({
       entryPoints: [resolve(ROOT, `src/${name}.ts`)],
       outfile: resolve(DIST, `${name}.js`),
+      bundle: true,
       format: 'iife',
       minify: isPackage,
     });

@@ -34,10 +34,11 @@ export function isHiddenPage(): boolean {
   return window.location.pathname === '/hidden';
 }
 
-/** Read displayed rank numbers from all story rows on the current page */
+/** Read displayed rank numbers from main feed story rows (excludes unseen panel) */
 export function getPageRanks(): Record<string, number> {
   const ranks: Record<string, number> = {};
   for (const row of document.querySelectorAll('.athing')) {
+    if (row.closest('.hn-mod-unseen')) continue;
     const id = row.getAttribute('id');
     const rankEl = row.querySelector('span.rank');
     if (id && rankEl) {
@@ -53,10 +54,11 @@ export function currentPageNumber(): number {
   return parseInt(new URLSearchParams(window.location.search).get('p') || '1');
 }
 
-/** Remove false-positive hidden IDs: stories visible on the feed aren't hidden */
+/** Remove false-positive hidden IDs: stories visible on the main feed aren't hidden */
 export function cleanHiddenIds(hiddenIds: Set<string>): void {
   let cleaned = false;
   for (const row of document.querySelectorAll('tr.athing')) {
+    if (row.closest('.hn-mod-unseen')) continue;
     const id = row.getAttribute('id');
     if (id && hiddenIds.has(id)) {
       hiddenIds.delete(id);

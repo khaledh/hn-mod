@@ -83,6 +83,22 @@ tr.athing > td {
     margin-left: 3px;
 }
 
+/* Dismiss button in unseen panel */
+.hn-mod-dismiss,
+.hn-mod-dismiss:link,
+.hn-mod-dismiss:visited {
+    color: #888;
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: bold;
+    line-height: 1;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+.hn-mod-dismiss:hover {
+    color: #ff6600;
+}
+
 /* Unseen stories panel */
 .hn-mod-unseen {
     margin: 0 8px 8px 8px;
@@ -101,6 +117,7 @@ tr.athing > td {
 .hn-mod-unseen-content {
     font-size: 10pt;
     color: #828282;
+    margin-top: 6px;
 }
 .hn-mod-unseen-more {
     font-size: 9pt;

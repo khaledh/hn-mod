@@ -3,24 +3,36 @@
 // Loads persisted state from chrome.storage.sync, then initializes
 // each feature module: dimming, colorization, and new/trending indicators.
 
-import { loadAll, loadSeenStories, expandRankDiffs, capArray, pruneOldRanks } from './storage.ts';
+import {
+  loadAll,
+  loadSeenStories,
+  loadChunked,
+  chunkedFields,
+  capArray,
+  pruneOldRanks,
+  migrateStorage,
+  STORAGE_VERSION,
+} from './storage.ts';
 import { isHiddenPage, syncHiddenIdsFromPage, cleanHiddenIds } from './page.ts';
 import { adjustTitlesAndPersistDimming } from './dimming.ts';
 import { colorizePoints } from './colorize.ts';
-import { markNewAndTrendingStories, observeNewRows, addSeenLinks } from './indicators.ts';
+import { markNewAndTrendingStories, observeNewRows } from './indicators.ts';
 import { showUnseenStories } from './unseen.ts';
 import { addFavicons } from './favicons.ts';
 
 loadAll((items) => {
-  // Handles all formats: chunked (seenIds_0..N), legacy single (seenIds), legacy compact (seenStories)
+  // Handles all formats: chunked, legacy single (seenIds), legacy compact (seenStories)
   const seenStories = loadSeenStories(items);
 
-  // Clean up legacy keys
-  if (items.seenStories) chrome.storage.sync.remove('seenStories');
-  if (items.seenIds) chrome.storage.sync.remove('seenIds');
+  const rawItems = items as unknown as Record<string, unknown>;
+  const rankDiffChangedAt = loadChunked(chunkedFields.rankDiffChangedAt, rawItems);
+  const hiddenIds = loadChunked(chunkedFields.hiddenIds, rawItems);
+  const previousPageRanks = loadChunked(chunkedFields.previousPageRanks, rawItems);
 
-  const rankDiffChangedAt = expandRankDiffs(items.rankDiffChangedAt);
-  const hiddenIds = new Set(items.hiddenIds.map(String));
+  // One-time migration: re-save all data in chunked format
+  if ((items.storageVersion as number) < STORAGE_VERSION) {
+    migrateStorage(items, seenStories, hiddenIds, previousPageRanks, rankDiffChangedAt);
+  }
 
   // Sync hidden IDs from the DOM when user visits /hidden pages
   if (isHiddenPage()) {
@@ -31,24 +43,25 @@ loadAll((items) => {
   // Remove false positives: stories visible on the feed are clearly not hidden
   cleanHiddenIds(hiddenIds);
 
-  capArray(items.dimmedEntries);
-  capArray(items.undimmedEntries);
-  pruneOldRanks(seenStories, items.previousPageRanks);
+  capArray(items.dimmedEntries as string[]);
+  capArray(items.undimmedEntries as string[]);
+  pruneOldRanks(seenStories, previousPageRanks);
 
   const dimmingConfig = {
-    ciKeywords: items.ciKeywords,
-    csKeywords: items.csKeywords,
-    domains: items.domains,
-    dimmedEntries: items.dimmedEntries,
-    undimmedEntries: items.undimmedEntries,
+    ciKeywords: items.ciKeywords as string[],
+    csKeywords: items.csKeywords as string[],
+    domains: items.domains as string[],
+    dimmedEntries: items.dimmedEntries as string[],
+    undimmedEntries: items.undimmedEntries as string[],
   };
 
   addFavicons();
   adjustTitlesAndPersistDimming(dimmingConfig);
   colorizePoints();
 
-  if (items.showUnseen) showUnseenStories(seenStories, hiddenIds, dimmingConfig);
-  markNewAndTrendingStories(items.previousPageRanks, rankDiffChangedAt, seenStories);
-  addSeenLinks(seenStories);
-  observeNewRows(items.previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds, dimmingConfig);
+  const dismissedIds = new Set((items.dismissedIds as number[]).map(String));
+
+  if (items.showUnseen) showUnseenStories(seenStories, hiddenIds, dismissedIds, dimmingConfig);
+  markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, seenStories);
+  observeNewRows(previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds, dimmingConfig);
 });

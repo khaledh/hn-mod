@@ -33,7 +33,7 @@ export function decay(ageSec: number): number {
  * Compare current page ranks to previous page load.
  * Updates previousPageRanks and rankDiffChangedAt in place, then persists.
  */
-function computeRankDiffs(previousPageRanks: PageRanks, rankDiffChangedAt: RankDiffMap): void {
+export function computeRankDiffs(previousPageRanks: PageRanks, rankDiffChangedAt: RankDiffMap): void {
   const currentRanks = getPageRanks();
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -218,8 +218,6 @@ async function fixWrongStoryOnPage(
     // Apply favicons, dimming, and seen links to the new row
     addFavicons();
     if (dimmingConfig) adjustTitlesAndPersistDimming(dimmingConfig);
-    addSeenLinks(seenStories);
-
     // Update rank tracking
     if (wrongId) delete previousPageRanks[wrongId];
     const rankEl = newTitleRow.querySelector('span.rank');
@@ -239,6 +237,17 @@ async function fixWrongStoryOnPage(
 }
 
 // --- DOM helpers ---
+
+/** Renumber main feed stories sequentially after hides (HN doesn't renumber client-side) */
+export function renumberStories(storyTable: Element, page: number): void {
+  const startRank = (page - 1) * 30 + 1;
+  let rank = startRank;
+  for (const rankSpan of storyTable.querySelectorAll('tr.athing span.rank')) {
+    if (rankSpan.closest('.hn-mod-unseen')) continue;
+    rankSpan.textContent = `${rank}.`;
+    rank++;
+  }
+}
 
 /** Remove a story's three rows (title, subtext, spacer) from the DOM */
 export function removeStoryRows(trTitle: Element): void {
@@ -290,52 +299,6 @@ export function markNewAndTrendingStories(
   markVisibleStoriesAsSeen(seenStories);
 }
 
-/** Add "seen" links to all story subtext rows */
-export function addSeenLinks(seenStories: SeenStories): void {
-  for (const trTitle of document.querySelectorAll('tr.athing')) {
-    const entryId = trTitle.getAttribute('id');
-    if (!entryId) continue;
-
-    const trSub = trTitle.nextElementSibling;
-    const tdSubtext = trSub?.querySelector('td.subtext');
-    if (!tdSubtext || tdSubtext.querySelector('.seenLink')) continue;
-
-    // Only show for stories that aren't already fully seen
-    if (seenStories[entryId] === true) continue;
-
-    const link = document.createElement('a');
-    link.href = '#';
-    link.className = 'seenLink';
-    link.textContent = 'seen';
-    link.onclick = (e) => {
-      e.preventDefault();
-      seenStories[entryId] = true;
-      saveSeenStories(seenStories);
-
-      // Update all rows with this story ID (main page + unseen panel)
-      for (const row of document.querySelectorAll(`tr.athing[id="${entryId}"]`)) {
-        const dot = row.querySelector<HTMLElement>('.hn-mod-dot');
-        if (dot) {
-          dot.style.opacity = '0.00';
-          dot.style.fontSize = '12.0px';
-        }
-
-        row.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
-
-        // Remove seen link from this row's subtext
-        const seenLink = row.nextElementSibling?.querySelector('.seenLink');
-        if (seenLink) {
-          const prevText = seenLink.previousSibling;
-          if (prevText?.nodeType === Node.TEXT_NODE) prevText.remove();
-          seenLink.remove();
-        }
-      }
-    };
-
-    tdSubtext.appendChild(document.createTextNode(' | '));
-    tdSubtext.appendChild(link);
-  }
-}
 
 /** Record all currently visible stories as seen */
 function markVisibleStoriesAsSeen(seenStories: SeenStories): void {
@@ -356,7 +319,7 @@ function markVisibleStoriesAsSeen(seenStories: SeenStories): void {
 // --- Mutation observer ---
 
 /** Handle rank adjustments when stories are hidden on front pages */
-function handleHideRankAdjustments(
+export function handleHideRankAdjustments(
   removedIds: string[],
   previousPageRanks: PageRanks,
   hiddenIds: Set<string>,
@@ -380,8 +343,14 @@ function handleHideRankAdjustments(
     }
   }
 
-  // Merge current page ranks into the flat map
-  Object.assign(previousPageRanks, getPageRanks());
+  // Add ranks for newly appeared stories (e.g. replacements after a hide)
+  // without overwriting the adjusted ranks of existing stories
+  const currentRanks = getPageRanks();
+  for (const [id, rank] of Object.entries(currentRanks)) {
+    if (previousPageRanks[id] === undefined) {
+      previousPageRanks[id] = rank;
+    }
+  }
   savePageRanks(previousPageRanks);
 }
 
@@ -444,7 +413,6 @@ export function observeNewRows(
     if (addedStoryNodes.length > 0) {
       addFavicons();
       adjustTitlesAndPersistDimming(dimmingConfig);
-      addSeenLinks(seenStories);
     }
 
     // Adjust rank tracking when stories are hidden (front pages only)
@@ -454,6 +422,10 @@ export function observeNewRows(
 
       handleHideRankAdjustments(removedIds, previousPageRanks, hiddenIds, suppressHiddenTracking);
       knownStoryIds = currentIds;
+
+      if (removedIds.length > 0) {
+        renumberStories(storyTable, currentPageNumber());
+      }
 
       // Fix HN's pagination bug: on page 2+, HN adds the wrong story after a
       // hide. The removal and addition often arrive in separate observer batches,

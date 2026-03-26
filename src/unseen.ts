@@ -6,10 +6,10 @@
 // Rows are styled identically to HN's native story rows, with indicators.
 
 import { isListingPage, currentPageNumber } from './page.ts';
-import { buildIndicatorCell, addSeenLinks, removeStoryRows } from './indicators.ts';
+import { removeStoryRows } from './indicators.ts';
 import { intensityStyle, type IntensityStyle } from './colorize.ts';
 import { adjustTitlesAndPersistDimming } from './dimming.ts';
-import { FADE_SEC, saveHiddenIds, type SeenStories, type DimmingConfig } from './storage.ts';
+import { FADE_SEC, saveHiddenIds, saveDismissedIds, saveSeenStories, type SeenStories, type DimmingConfig } from './storage.ts';
 import { fetchTopStoryIds, fetchStory, fetchAuthToken, type HNStory } from './api.ts';
 import { addFavicons } from './favicons.ts';
 
@@ -44,40 +44,51 @@ function timeAgo(unixTime: number): string {
 function addActionLinks(
   tdSubtext: HTMLElement,
   story: HNStory,
-  authToken: string,
   hiddenIds: Set<string>,
   id: string,
   trTitle: HTMLElement,
 ): void {
-  const itemUrl = `item?id=${story.id}`;
-  const actions = [
-    { text: 'flag', href: `flag?id=${story.id}&auth=${authToken}&goto=${itemUrl}` },
-    { text: 'hide', href: `hide?id=${story.id}&auth=${authToken}&goto=news` },
-    { text: 'favorite', href: `fave?id=${story.id}&auth=${authToken}` },
-  ];
-  for (const action of actions) {
+  /** Fetch the auth token on first use, then cache it */
+  let cachedToken: string | null = null;
+  async function getToken(): Promise<string | null> {
+    if (cachedToken) return cachedToken;
+    cachedToken = await fetchAuthToken(story.id);
+    return cachedToken;
+  }
+
+  for (const text of ['flag', 'hide', 'favorite'] as const) {
     tdSubtext.appendChild(document.createTextNode(' | '));
     const link = document.createElement('a');
-    link.href = action.href;
-    link.textContent = action.text;
-    if (action.text === 'hide') {
-      link.onclick = (e) => {
-        e.preventDefault();
+    link.href = '#';
+    link.textContent = text;
+    link.onclick = async (e) => {
+      e.preventDefault();
+      if (text === 'hide') {
         hiddenIds.add(id);
         saveHiddenIds(hiddenIds);
-        trTitle.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
-
+        trTitle.dispatchEvent(
+          new CustomEvent('hn-mod-seen', { bubbles: true, detail: { hidden: true } }),
+        );
         const mainHideLink = document.querySelector<HTMLAnchorElement>(
           `tr.athing[id="${id}"] ~ tr a[href^="hide?id=${id}&"]`,
         );
         if (mainHideLink && mainHideLink.closest('.hn-mod-unseen') === null) {
           mainHideLink.click();
         } else {
-          const snipUrl = link.href.replace('/hide', '/snip-story').replace('goto', 'onop');
-          fetch(snipUrl);
+          const token = await getToken();
+          if (token) {
+            const url = `hide?id=${story.id}&auth=${token}&onop=news`;
+            fetch(url.replace('hide', 'snip-story'));
+          }
         }
-      };
-    }
+      } else if (text === 'flag') {
+        const token = await getToken();
+        if (token) window.location.href = `flag?id=${story.id}&auth=${token}&goto=item?id=${story.id}`;
+      } else {
+        const token = await getToken();
+        if (token) fetch(`fave?id=${story.id}&auth=${token}`);
+      }
+    };
     tdSubtext.appendChild(link);
   }
 }
@@ -87,24 +98,38 @@ function addActionLinks(
 function buildStoryRows(
   story: HNStory,
   rank: number,
-  seenStories: SeenStories,
+  dismissedIds: Set<string>,
 ): [HTMLTableRowElement, HTMLTableRowElement, HTMLTableRowElement] {
   const id = String(story.id);
-  const renderTimeSec = Math.floor(Date.now() / 1000);
 
-  // Title row: indicator | rank | vote placeholder | title
+  // Title row: dismiss × | rank | vote placeholder | title
   const trTitle = document.createElement('tr');
   trTitle.className = 'athing';
-  trTitle.id = id;
+  trTitle.id = `hn-mod-${id}`;
+  trTitle.dataset.storyId = id;
 
-  trTitle.appendChild(buildIndicatorCell(id, {}, seenStories, renderTimeSec));
+  const tdDismiss = document.createElement('td');
+  tdDismiss.className = 'hn-mod-indicator-cell';
+  const dismissBtn = document.createElement('a');
+  dismissBtn.href = '#';
+  dismissBtn.className = 'hn-mod-dismiss';
+  dismissBtn.textContent = '\u00d7';
+  dismissBtn.title = 'Dismiss';
+  dismissBtn.onclick = (e) => {
+    e.preventDefault();
+    dismissedIds.add(id);
+    saveDismissedIds(dismissedIds);
+    trTitle.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
+  };
+  tdDismiss.appendChild(dismissBtn);
+  trTitle.appendChild(tdDismiss);
 
   const tdRank = document.createElement('td');
   tdRank.className = 'title';
   tdRank.setAttribute('valign', 'top');
   tdRank.setAttribute('align', 'right');
   const rankSpan = document.createElement('span');
-  rankSpan.className = 'rank';
+  rankSpan.className = 'hn-mod-rank';
   rankSpan.textContent = `${rank}.`;
   tdRank.appendChild(rankSpan);
   trTitle.appendChild(tdRank);
@@ -152,7 +177,7 @@ function buildStoryRows(
 
   const scoreSpan = document.createElement('span');
   scoreSpan.className = 'score';
-  scoreSpan.id = `score_${story.id}`;
+  scoreSpan.id = `hn-mod-score_${story.id}`;
   scoreSpan.textContent = `${story.score || 0} points`;
   applyStyle(scoreSpan, intensityStyle(story.score || 0));
   tdSubtext.appendChild(scoreSpan);
@@ -193,15 +218,12 @@ function buildStoryRows(
 // --- Pagination ---
 
 function addPaginationLinks(visibleCount: number): void {
-  const moreLink = document.querySelector<HTMLAnchorElement>('a.morelink');
-  if (!moreLink) return;
-
-  moreLink.textContent = 'Next';
-
   const page = currentPageNumber();
-  const totalPages = Math.max(Math.ceil(visibleCount / STORIES_PER_PAGE), page + 1);
-
+  const moreLink = document.querySelector<HTMLAnchorElement>('a.morelink');
+  const minPages = moreLink ? page + 1 : page;
+  const totalPages = Math.max(Math.ceil(visibleCount / STORIES_PER_PAGE), minPages);
   const basePath = window.location.pathname || '/';
+
   const td = document.createElement('td');
   td.className = 'hn-mod-pagination';
   td.style.paddingLeft = '10px';
@@ -210,17 +232,37 @@ function addPaginationLinks(visibleCount: number): void {
     if (p === page) {
       const span = document.createElement('span');
       span.textContent = String(p);
-      span.style.fontWeight = 'bold';
+      span.style.color = '#000';
+      span.style.border = '1px solid #999';
+      span.style.padding = '1px 5px';
+
       td.appendChild(span);
     } else {
       const a = document.createElement('a');
       a.href = `${basePath}?p=${p}`;
       a.textContent = String(p);
+      a.style.color = '#336699';
       td.appendChild(a);
     }
   }
-  const moreTd = moreLink.closest('td');
-  if (moreTd) moreTd.after(td);
+
+  if (moreLink) {
+    moreLink.textContent = 'Next';
+    moreLink.style.color = '#336699';
+    const moreTd = moreLink.closest('td');
+    if (moreTd) moreTd.after(td);
+  } else {
+    // Last page: no "More" link — insert pagination after the last spacer
+    const storyTable = document.querySelector('tr.athing')?.closest('tbody');
+    if (storyTable) {
+      const tr = document.createElement('tr');
+      const spacerTd = document.createElement('td');
+      spacerTd.setAttribute('colspan', '2');
+      tr.appendChild(spacerTd);
+      tr.appendChild(td);
+      storyTable.appendChild(tr);
+    }
+  }
 }
 
 // --- Unseen panel content loading ---
@@ -231,23 +273,28 @@ async function appendStoryToPanel(
   tbody: HTMLTableSectionElement,
   seenStories: SeenStories,
   hiddenIds: Set<string>,
+  dismissedIds: Set<string>,
   dimmingConfig: DimmingConfig,
 ): Promise<void> {
-  const [story, authToken] = await Promise.all([fetchStory(entry.id), fetchAuthToken(entry.id)]);
+  const story = await fetchStory(entry.id);
   if (!story) return;
 
-  for (const row of buildStoryRows(story, entry.rank, seenStories)) {
+  const id = String(story.id);
+  if (seenStories[id] === undefined) {
+    seenStories[id] = Math.floor(Date.now() / 1000);
+    saveSeenStories(seenStories);
+  }
+
+  for (const row of buildStoryRows(story, entry.rank, dismissedIds)) {
     tbody.appendChild(row);
   }
-  if (authToken) {
-    const id = String(story.id);
-    const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="${id}"]`);
+  {
+    const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="hn-mod-${id}"]`);
     const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
-    if (tdSubtext && tr) addActionLinks(tdSubtext, story, authToken, hiddenIds, id, tr);
+    if (tdSubtext && tr) addActionLinks(tdSubtext, story, hiddenIds, id, tr);
   }
   addFavicons();
   adjustTitlesAndPersistDimming(dimmingConfig);
-  addSeenLinks(seenStories);
 }
 
 /** Load initial stories into the panel */
@@ -256,6 +303,7 @@ async function loadPanelContent(
   unseenEntries: UnseenEntry[],
   seenStories: SeenStories,
   hiddenIds: Set<string>,
+  dismissedIds: Set<string>,
   dimmingConfig: DimmingConfig,
   summary: HTMLElement,
   details: HTMLDetailsElement,
@@ -277,10 +325,23 @@ async function loadPanelContent(
   for (let i = 0; i < stories.length; i++) {
     const story = stories[i];
     if (!story) continue;
-    for (const row of buildStoryRows(story, unseenEntries[i].rank, seenStories)) {
+    for (const row of buildStoryRows(story, unseenEntries[i].rank, dismissedIds)) {
       tbody.appendChild(row);
     }
   }
+
+  // Mark shown stories as seen so their red dots fade correctly
+  const nowSec = Math.floor(Date.now() / 1000);
+  let seenUpdated = false;
+  for (const story of stories) {
+    if (!story) continue;
+    const id = String(story.id);
+    if (seenStories[id] === undefined) {
+      seenStories[id] = nowSec;
+      seenUpdated = true;
+    }
+  }
+  if (seenUpdated) saveSeenStories(seenStories);
 
   table.appendChild(tbody);
   content.appendChild(table);
@@ -303,44 +364,79 @@ async function loadPanelContent(
   }
   updateOverflowMsg();
 
-  // Fetch auth tokens in background, then add action links + dimming/seen
-  Promise.all(shown.map(({ id }) => fetchAuthToken(id))).then((authTokens) => {
-    for (let i = 0; i < stories.length; i++) {
-      const story = stories[i];
-      const token = authTokens[i];
-      if (!story || !token) continue;
-      const id = String(story.id);
-      const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="${id}"]`);
-      const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
-      if (!tdSubtext || !tr) continue;
-      addActionLinks(tdSubtext, story, token, hiddenIds, id, tr);
+  // Add action links (auth token fetched on-demand when clicked)
+  for (let i = 0; i < stories.length; i++) {
+    const story = stories[i];
+    if (!story) continue;
+    const id = String(story.id);
+    const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="hn-mod-${id}"]`);
+    const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
+    if (!tdSubtext || !tr) continue;
+    addActionLinks(tdSubtext, story, hiddenIds, id, tr);
+  }
+  adjustTitlesAndPersistDimming(dimmingConfig);
+
+  // When a story is hidden from the main feed, also remove it from the panel
+  document.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement).closest?.('a[href^="hide?id="]');
+    if (!link || link.closest('.hn-mod-unseen')) return;
+    const match = link.getAttribute('href')?.match(/hide\?id=(\d+)/);
+    if (!match) return;
+    const id = match[1];
+    const panelRow = table.querySelector<HTMLElement>(`tr.athing[data-story-id="${id}"]`);
+    if (panelRow) {
+      hiddenIds.add(id);
+      saveHiddenIds(hiddenIds);
+      panelRow.dispatchEvent(
+        new CustomEvent('hn-mod-seen', { bubbles: true, detail: { hidden: true } }),
+      );
     }
-    adjustTitlesAndPersistDimming(dimmingConfig);
-    addSeenLinks(seenStories);
   });
 
   // Remove stories from the panel when marked as seen/hidden
   let unseenCount = unseenEntries.length;
-  table.addEventListener('hn-mod-seen', (e) => {
+  table.addEventListener('hn-mod-seen', async (e) => {
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
     const trTitle = target.closest('tr.athing');
     if (!trTitle) return;
 
-    // Decrement ranks of stories below the removed one
-    const removedRankEl = trTitle.querySelector('span.rank');
-    const removedRank = removedRankEl ? parseInt(removedRankEl.textContent || '') : NaN;
-    if (!isNaN(removedRank)) {
-      for (const rankSpan of tbody.querySelectorAll('span.rank')) {
-        const rank = parseInt(rankSpan.textContent || '');
-        if (!isNaN(rank) && rank > removedRank) {
-          rankSpan.textContent = `${rank - 1}.`;
+    // Persist dismissal so the story doesn't reappear on reload.
+    // Hidden stories are already tracked via hiddenIds, so skip those.
+    const isHidden = e instanceof CustomEvent && e.detail?.hidden;
+    if (!isHidden) {
+      const storyId = (trTitle as HTMLElement).dataset.storyId;
+      if (storyId) {
+        dismissedIds.add(storyId);
+        saveDismissedIds(dismissedIds);
+      }
+    }
+
+    // Only decrement ranks when a story is hidden (removed from HN's ranking).
+    // Marking as seen just removes it from the panel — it keeps its rank.
+    if (isHidden) {
+      const removedRankEl = trTitle.querySelector('span.hn-mod-rank');
+      const removedRank = removedRankEl ? parseInt(removedRankEl.textContent || '') : NaN;
+      if (!isNaN(removedRank)) {
+        for (const rankSpan of tbody.querySelectorAll('span.hn-mod-rank')) {
+          const rank = parseInt(rankSpan.textContent || '');
+          if (!isNaN(rank) && rank > removedRank) {
+            rankSpan.textContent = `${rank - 1}.`;
+          }
+        }
+        // Also adjust overflow entries that haven't been rendered yet
+        for (const entry of overflow) {
+          if (entry.rank > removedRank) entry.rank--;
         }
       }
-      // Also adjust overflow entries that haven't been rendered yet
-      for (const entry of overflow) {
-        if (entry.rank > removedRank) entry.rank--;
-      }
+    }
+
+    // Fetch the backfill story and wait for it BEFORE removing the old rows,
+    // so the new row appears in the same paint frame — no visible gap.
+    if (unseenCount > 1 && overflow.length > 0) {
+      const entry = overflow.shift()!;
+      updateOverflowMsg();
+      await appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dismissedIds, dimmingConfig);
     }
 
     removeStoryRows(trTitle);
@@ -348,13 +444,6 @@ async function loadPanelContent(
     unseenCount--;
     if (unseenCount > 0) {
       summary.textContent = `${unseenCount} new ${unseenCount === 1 ? 'story' : 'stories'}`;
-      // Backfill from overflow
-      if (overflow.length > 0) {
-        const entry = overflow.shift();
-        if (!entry) return;
-        updateOverflowMsg();
-        appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dimmingConfig);
-      }
     } else {
       details.replaceWith(
         Object.assign(document.createElement('div'), {
@@ -374,6 +463,7 @@ async function loadPanelContent(
 export async function showUnseenStories(
   seenStories: SeenStories,
   hiddenIds: Set<string>,
+  dismissedIds: Set<string>,
   dimmingConfig: DimmingConfig,
 ): Promise<void> {
   if (!isListingPage()) return;
@@ -386,14 +476,36 @@ export async function showUnseenStories(
   const topIds = await fetchTopStoryIds();
 
   // Filter out hidden stories first, then assign user-facing ranks
-  const visibleIds = topIds.filter((id) => !hiddenIds.has(String(id)));
+  let visibleIds = topIds.filter((id) => !hiddenIds.has(String(id)));
+
+  // Detect server-side hidden stories: present in the API but missing from
+  // the current page's expected rank range (hidden via HN's native interface)
+  const page = currentPageNumber();
+  const pageStart = (page - 1) * STORIES_PER_PAGE;
+  const pageEnd = pageStart + STORIES_PER_PAGE;
+  const mainFeedIds = new Set(
+    [...document.querySelectorAll('tr.athing')].map((tr) => tr.getAttribute('id')).filter(Boolean),
+  );
+  let hiddenUpdated = false;
+  for (let i = pageStart; i < Math.min(pageEnd, visibleIds.length); i++) {
+    const id = String(visibleIds[i]);
+    if (!mainFeedIds.has(id)) {
+      hiddenIds.add(id);
+      hiddenUpdated = true;
+    }
+  }
+  if (hiddenUpdated) {
+    saveHiddenIds(hiddenIds);
+    visibleIds = visibleIds.filter((id) => !hiddenIds.has(String(id)));
+  }
 
   addPaginationLinks(visibleIds.length);
 
-  // Include stories that are unseen or still within the fade period
+  // Include stories that are unseen or still within the fade period, excluding dismissed
   const unseenEntries: UnseenEntry[] = [];
   for (let i = 0; i < visibleIds.length; i++) {
     const id = visibleIds[i];
+    if (dismissedIds.has(String(id))) continue;
     const seen = seenSnapshot[String(id)];
     if (seen === undefined || (typeof seen === 'number' && nowSec - seen < FADE_SEC)) {
       unseenEntries.push({ id, rank: i + 1 });
@@ -447,6 +559,7 @@ export async function showUnseenStories(
       unseenEntries,
       seenStories,
       hiddenIds,
+      dismissedIds,
       dimmingConfig,
       summary,
       details,

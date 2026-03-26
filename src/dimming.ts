@@ -114,7 +114,7 @@ function getStoryElements(trTitle: HTMLElement): StoryElements {
     tdSubtext: trSubtext?.querySelector<HTMLElement>('td.subtext') ?? null,
     tdRank: trTitle.querySelector<HTMLElement>('td:first-child'),
     tdVoteLinks: trTitle.querySelector<HTMLElement>('td:nth-child(2)'),
-    entryId: trTitle.id,
+    entryId: (trTitle as HTMLElement).dataset.storyId || trTitle.id,
     aTitle: trTitle.querySelector<HTMLElement>('.titleline > a'),
     aSite: trTitle.querySelector<HTMLElement>('.sitestr'),
   };
@@ -154,10 +154,16 @@ export function adjustTitlesAndPersistDimming(config: DimmingConfig): void {
         e.preventDefault();
         const isDimming = capturedLink.innerText === 'dim';
         // Apply to all rows with the same story ID (main feed + unseen panel)
-        for (const row of document.querySelectorAll<HTMLElement>(`tr.athing[id="${entryId}"]`)) {
+        for (const row of document.querySelectorAll<HTMLElement>(
+          `tr.athing[id="${entryId}"], tr.athing[data-story-id="${entryId}"]`,
+        )) {
           applyDimming(getStoryElements(row), isDimming);
           const link = row.nextElementSibling?.querySelector<HTMLElement>('.dimLink');
           if (link) link.innerText = isDimming ? 'undim' : 'dim';
+          // Dismiss from unseen panel when dimming
+          if (isDimming && row.dataset.storyId) {
+            row.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
+          }
         }
         persistDimState(entryId, isDimming, dimmedEntries, undimmedEntries);
       };
