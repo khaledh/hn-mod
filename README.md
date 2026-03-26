@@ -19,7 +19,11 @@ panel.
   comment count
 - **Favicons** — site icons next to story titles for quick visual scanning
 
-## Installation
+## Install
+
+[**Chrome Web Store**](https://chromewebstore.google.com/detail/fgbmgcggdemccdhdapkhnkkcooeljabm)
+
+### Manual installation
 
 1. Clone the repo
 2. Run `npm install` and `npm run build`
