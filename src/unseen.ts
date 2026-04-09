@@ -8,7 +8,7 @@
 import { isListingPage, currentPageNumber } from './page.ts';
 import { removeStoryRows } from './indicators.ts';
 import { intensityStyle, type IntensityStyle } from './colorize.ts';
-import { adjustTitlesAndPersistDimming } from './dimming.ts';
+import { adjustTitlesAndPersistDimming, isStoryDimmed } from './dimming.ts';
 import { FADE_SEC, saveHiddenIds, saveDismissedIds, saveSeenStories, type SeenStories, type DimmingConfig } from './storage.ts';
 import { fetchTopStoryIds, fetchStory, fetchAuthToken, type HNStory } from './api.ts';
 import { addFavicons } from './favicons.ts';
@@ -21,10 +21,69 @@ function applyStyle(el: HTMLElement, style: IntensityStyle | null): void {
 
 const MAX_UNSEEN_SHOWN = 5;
 const STORIES_PER_PAGE = 30;
+const NO_NEW_STORIES_TEXT = 'No new stories';
 
 interface UnseenEntry {
   id: number;
   rank: number;
+}
+
+function unseenSummaryText(count: number): string {
+  return `${count} new ${count === 1 ? 'story' : 'stories'}`;
+}
+
+function buildNoNewStoriesMessage(): HTMLDivElement {
+  return Object.assign(document.createElement('div'), {
+    className: 'hn-mod-unseen',
+    textContent: NO_NEW_STORIES_TEXT,
+  });
+}
+
+function replaceWithNoNewStories(el: Element): void {
+  el.replaceWith(buildNoNewStoriesMessage());
+}
+
+function storySiteText(story: HNStory): string | null {
+  if (!story.url) return null;
+  try {
+    return new URL(story.url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+function isFreshlyUnseen(seenStories: SeenStories, id: string, nowSec: number): boolean {
+  const seen = seenStories[id];
+  return seen === undefined || (typeof seen === 'number' && nowSec - seen < FADE_SEC);
+}
+
+function mainFeedStoryIds(): Set<string> {
+  return new Set(
+    [...document.querySelectorAll('tr.athing')]
+      .map((tr) => tr.getAttribute('id'))
+      .filter((id): id is string => id !== null),
+  );
+}
+
+function readMainFeedRank(feedId: string): number {
+  const rankEl = document.querySelector(`tr.athing[id="${feedId}"] span.rank`);
+  return rankEl ? parseInt(rankEl.textContent || '') : 0;
+}
+
+function isDimmedOnMainFeed(entryId: string, dimmingConfig: DimmingConfig): boolean {
+  const row = document.querySelector<HTMLElement>(`tr.athing[id="${entryId}"]`);
+  if (!row) return false;
+  if (row.classList.contains('dimmed')) return true;
+  return isStoryDimmed(
+    entryId,
+    row.querySelector<HTMLElement>('.titleline > a')?.innerText ??
+      row.querySelector<HTMLElement>('.titleline > a')?.textContent ??
+      null,
+    row.querySelector<HTMLElement>('.sitestr')?.innerText ??
+      row.querySelector<HTMLElement>('.sitestr')?.textContent ??
+      null,
+    dimmingConfig,
+  );
 }
 
 /** Format Unix timestamp as relative time (e.g. "3 hours ago") */
@@ -215,6 +274,22 @@ function buildStoryRows(
   return [trTitle, trSub, trSpacer];
 }
 
+function updateRankSpansAfterHiddenRemoval(
+  tbody: HTMLTableSectionElement,
+  overflow: UnseenEntry[],
+  removedRank: number,
+): void {
+  for (const rankSpan of tbody.querySelectorAll('span.hn-mod-rank')) {
+    const rank = parseInt(rankSpan.textContent || '');
+    if (!isNaN(rank) && rank > removedRank) {
+      rankSpan.textContent = `${rank - 1}.`;
+    }
+  }
+  for (const entry of overflow) {
+    if (entry.rank > removedRank) entry.rank--;
+  }
+}
+
 // --- Pagination ---
 
 function addPaginationLinks(visibleCount: number): void {
@@ -275,11 +350,13 @@ async function appendStoryToPanel(
   hiddenIds: Set<string>,
   dismissedIds: Set<string>,
   dimmingConfig: DimmingConfig,
-): Promise<void> {
+): Promise<boolean> {
   const story = await fetchStory(entry.id);
-  if (!story) return;
+  if (!story) return false;
 
   const id = String(story.id);
+  if (isStoryDimmed(id, story.title, storySiteText(story), dimmingConfig)) return false;
+
   if (seenStories[id] === undefined) {
     seenStories[id] = Math.floor(Date.now() / 1000);
     saveSeenStories(seenStories);
@@ -295,6 +372,47 @@ async function appendStoryToPanel(
   }
   addFavicons();
   adjustTitlesAndPersistDimming(dimmingConfig);
+  return true;
+}
+
+async function appendNextVisibleStory(
+  entries: UnseenEntry[],
+  tbody: HTMLTableSectionElement,
+  seenStories: SeenStories,
+  hiddenIds: Set<string>,
+  dismissedIds: Set<string>,
+  dimmingConfig: DimmingConfig,
+): Promise<number> {
+  let skipped = 0;
+  while (entries.length > 0) {
+    const entry = entries.shift()!;
+    if (
+      await appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dismissedIds, dimmingConfig)
+    ) {
+      return skipped;
+    }
+    skipped++;
+  }
+  return skipped;
+}
+
+function updateOverflowMessage(
+  content: HTMLElement,
+  moreDiv: HTMLDivElement | null,
+  overflow: UnseenEntry[],
+): HTMLDivElement | null {
+  if (overflow.length > 0) {
+    const el =
+      moreDiv ??
+      Object.assign(document.createElement('div'), {
+        className: 'hn-mod-unseen-more',
+      });
+    if (!moreDiv) content.appendChild(el);
+    el.textContent = `${overflow.length} more new ${overflow.length === 1 ? 'story' : 'stories'}`;
+    return el;
+  }
+  moreDiv?.remove();
+  return null;
 }
 
 /** Load initial stories into the panel */
@@ -310,11 +428,6 @@ async function loadPanelContent(
 ): Promise<void> {
   content.textContent = 'Loading...';
 
-  const shown = unseenEntries.slice(0, MAX_UNSEEN_SHOWN);
-  const overflow = unseenEntries.slice(MAX_UNSEEN_SHOWN);
-
-  const stories = await Promise.all(shown.map(({ id }) => fetchStory(id)));
-
   content.textContent = '';
 
   const table = document.createElement('table');
@@ -322,26 +435,17 @@ async function loadPanelContent(
   table.style.cssText = 'border-spacing: 0; border-collapse: collapse;';
 
   const tbody = document.createElement('tbody');
-  for (let i = 0; i < stories.length; i++) {
-    const story = stories[i];
-    if (!story) continue;
-    for (const row of buildStoryRows(story, unseenEntries[i].rank, dismissedIds)) {
-      tbody.appendChild(row);
-    }
+  const overflow = [...unseenEntries];
+  for (let i = 0; i < MAX_UNSEEN_SHOWN && overflow.length > 0; i++) {
+    await appendNextVisibleStory(
+      overflow,
+      tbody,
+      seenStories,
+      hiddenIds,
+      dismissedIds,
+      dimmingConfig,
+    );
   }
-
-  // Mark shown stories as seen so their red dots fade correctly
-  const nowSec = Math.floor(Date.now() / 1000);
-  let seenUpdated = false;
-  for (const story of stories) {
-    if (!story) continue;
-    const id = String(story.id);
-    if (seenStories[id] === undefined) {
-      seenStories[id] = nowSec;
-      seenUpdated = true;
-    }
-  }
-  if (seenUpdated) saveSeenStories(seenStories);
 
   table.appendChild(tbody);
   content.appendChild(table);
@@ -349,32 +453,16 @@ async function loadPanelContent(
 
   // Overflow message
   let moreDiv: HTMLDivElement | null = null;
-  function updateOverflowMsg(): void {
-    if (overflow.length > 0) {
-      if (!moreDiv) {
-        moreDiv = document.createElement('div');
-        moreDiv.className = 'hn-mod-unseen-more';
-        content.appendChild(moreDiv);
-      }
-      moreDiv.textContent = `${overflow.length} more new ${overflow.length === 1 ? 'story' : 'stories'}`;
-    } else if (moreDiv) {
-      moreDiv.remove();
-      moreDiv = null;
-    }
-  }
-  updateOverflowMsg();
+  moreDiv = updateOverflowMessage(content, moreDiv, overflow);
 
-  // Add action links (auth token fetched on-demand when clicked)
-  for (let i = 0; i < stories.length; i++) {
-    const story = stories[i];
-    if (!story) continue;
-    const id = String(story.id);
-    const tr = tbody.querySelector<HTMLElement>(`tr.athing[id="hn-mod-${id}"]`);
-    const tdSubtext = tr?.nextElementSibling?.querySelector<HTMLElement>('td.subtext');
-    if (!tdSubtext || !tr) continue;
-    addActionLinks(tdSubtext, story, hiddenIds, id, tr);
-  }
   adjustTitlesAndPersistDimming(dimmingConfig);
+
+  let unseenCount = tbody.querySelectorAll('tr.athing').length + overflow.length;
+  if (unseenCount === 0) {
+    replaceWithNoNewStories(details);
+    return;
+  }
+  summary.textContent = unseenSummaryText(unseenCount);
 
   // When a story is hidden from the main feed, also remove it from the panel
   document.addEventListener('click', (e) => {
@@ -394,7 +482,6 @@ async function loadPanelContent(
   });
 
   // Remove stories from the panel when marked as seen/hidden
-  let unseenCount = unseenEntries.length;
   table.addEventListener('hn-mod-seen', async (e) => {
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
@@ -418,39 +505,33 @@ async function loadPanelContent(
       const removedRankEl = trTitle.querySelector('span.hn-mod-rank');
       const removedRank = removedRankEl ? parseInt(removedRankEl.textContent || '') : NaN;
       if (!isNaN(removedRank)) {
-        for (const rankSpan of tbody.querySelectorAll('span.hn-mod-rank')) {
-          const rank = parseInt(rankSpan.textContent || '');
-          if (!isNaN(rank) && rank > removedRank) {
-            rankSpan.textContent = `${rank - 1}.`;
-          }
-        }
-        // Also adjust overflow entries that haven't been rendered yet
-        for (const entry of overflow) {
-          if (entry.rank > removedRank) entry.rank--;
-        }
+        updateRankSpansAfterHiddenRemoval(tbody, overflow, removedRank);
       }
     }
 
     // Fetch the backfill story and wait for it BEFORE removing the old rows,
     // so the new row appears in the same paint frame — no visible gap.
     if (unseenCount > 1 && overflow.length > 0) {
-      const entry = overflow.shift()!;
-      updateOverflowMsg();
-      await appendStoryToPanel(entry, tbody, seenStories, hiddenIds, dismissedIds, dimmingConfig);
+      moreDiv = updateOverflowMessage(content, moreDiv, overflow);
+      const skipped = await appendNextVisibleStory(
+        overflow,
+        tbody,
+        seenStories,
+        hiddenIds,
+        dismissedIds,
+        dimmingConfig,
+      );
+      unseenCount -= skipped;
     }
 
     removeStoryRows(trTitle);
+    moreDiv = updateOverflowMessage(content, moreDiv, overflow);
 
     unseenCount--;
     if (unseenCount > 0) {
-      summary.textContent = `${unseenCount} new ${unseenCount === 1 ? 'story' : 'stories'}`;
+      summary.textContent = unseenSummaryText(unseenCount);
     } else {
-      details.replaceWith(
-        Object.assign(document.createElement('div'), {
-          className: 'hn-mod-unseen',
-          textContent: 'No new stories',
-        }),
-      );
+      replaceWithNoNewStories(details);
     }
   });
 }
@@ -483,9 +564,7 @@ export async function showUnseenStories(
   const page = currentPageNumber();
   const pageStart = (page - 1) * STORIES_PER_PAGE;
   const pageEnd = pageStart + STORIES_PER_PAGE;
-  const mainFeedIds = new Set(
-    [...document.querySelectorAll('tr.athing')].map((tr) => tr.getAttribute('id')).filter(Boolean),
-  );
+  const mainFeedIds = mainFeedStoryIds();
   let hiddenUpdated = false;
   for (let i = pageStart; i < Math.min(pageEnd, visibleIds.length); i++) {
     const id = String(visibleIds[i]);
@@ -502,13 +581,30 @@ export async function showUnseenStories(
   addPaginationLinks(visibleIds.length);
 
   // Include stories that are unseen or still within the fade period, excluding dismissed
+  const visibleIdSet = new Set(visibleIds.map(String));
   const unseenEntries: UnseenEntry[] = [];
   for (let i = 0; i < visibleIds.length; i++) {
     const id = visibleIds[i];
-    if (dismissedIds.has(String(id))) continue;
-    const seen = seenSnapshot[String(id)];
-    if (seen === undefined || (typeof seen === 'number' && nowSec - seen < FADE_SEC)) {
+    if (dismissedIds.has(String(id)) || isDimmedOnMainFeed(String(id), dimmingConfig)) continue;
+    if (isFreshlyUnseen(seenSnapshot, String(id), nowSec)) {
       unseenEntries.push({ id, rank: i + 1 });
+    }
+  }
+
+  // Supplement with new stories on the current page that aren't in the API's
+  // top 500 (can happen when many stories are hidden, pushing lower-ranked
+  // stories onto the page beyond the API's reach)
+  for (const feedId of mainFeedIds) {
+    if (
+      !feedId ||
+      visibleIdSet.has(feedId) ||
+      dismissedIds.has(feedId) ||
+      hiddenIds.has(feedId) ||
+      isDimmedOnMainFeed(feedId, dimmingConfig)
+    )
+      continue;
+    if (isFreshlyUnseen(seenSnapshot, feedId, nowSec)) {
+      unseenEntries.push({ id: Number(feedId), rank: readMainFeedRank(feedId) });
     }
   }
 
@@ -520,10 +616,7 @@ export async function showUnseenStories(
   if (!parentEl) return;
 
   if (unseenEntries.length === 0) {
-    const msg = document.createElement('div');
-    msg.className = 'hn-mod-unseen';
-    msg.textContent = 'No new stories';
-    parentEl.insertBefore(msg, storyTable);
+    parentEl.insertBefore(buildNoNewStoriesMessage(), storyTable);
     return;
   }
 
@@ -541,7 +634,7 @@ export async function showUnseenStories(
 
   const summary = document.createElement('summary');
   summary.className = 'hn-mod-unseen-summary';
-  summary.textContent = `${unseenEntries.length} new ${unseenEntries.length === 1 ? 'story' : 'stories'}`;
+  summary.textContent = unseenSummaryText(unseenEntries.length);
   details.appendChild(summary);
 
   const content = document.createElement('div');
@@ -550,21 +643,35 @@ export async function showUnseenStories(
 
   // Lazy-load story details on first expand, persist collapse state
   let loaded = false;
+  async function loadIfNeeded(): Promise<void> {
+    if (loaded) return;
+    loaded = true;
+    details.classList.add('hn-mod-unseen-loading');
+    try {
+      await loadPanelContent(
+        content,
+        unseenEntries,
+        seenStories,
+        hiddenIds,
+        dismissedIds,
+        dimmingConfig,
+        summary,
+        details,
+      );
+    } finally {
+      if (details.isConnected) details.classList.remove('hn-mod-unseen-loading');
+    }
+  }
+
   details.addEventListener('toggle', async () => {
     chrome.storage.local.set({ unseenPanelOpen: details.open });
-    if (!details.open || loaded) return;
-    loaded = true;
-    await loadPanelContent(
-      content,
-      unseenEntries,
-      seenStories,
-      hiddenIds,
-      dismissedIds,
-      dimmingConfig,
-      summary,
-      details,
-    );
+    if (!details.open) return;
+    await loadIfNeeded();
   });
 
   parentEl.insertBefore(details, storyTable);
+  if (details.open) {
+    summary.textContent = 'Loading...';
+    await loadIfNeeded();
+  }
 }

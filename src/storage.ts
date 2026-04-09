@@ -6,9 +6,10 @@
 // them on load.  Chunk 0 always uses the bare key name so existing data
 // requires no migration.
 
-export const MAX_ENTRIES = 500;
-export const MAX_SEEN_IDS = 2400;
-export const PRUNE_AGE_SEC = 72 * 60 * 60; // 72 hours
+export const MAX_RANK_DIFF_ENTRIES = 500;
+export const MAX_TRACKED_STORIES = 1167;
+export const MAX_DIM_STATE_ENTRIES = 700;
+export const PRUNE_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
 export const FADE_SEC = 30 * 60; // 30 minutes
 
 // --- Shared types ---
@@ -31,7 +32,7 @@ export interface DimmingConfig {
 }
 
 /** Bump this when the storage format changes to trigger a one-time migration */
-export const STORAGE_VERSION = 1;
+export const STORAGE_VERSION = 3;
 
 export interface StorageItems {
   storageVersion: number;
@@ -42,7 +43,6 @@ export interface StorageItems {
   undimmedEntries: string[];
   recentlySeen: Record<string, string[]>;
   showUnseen: boolean;
-  dismissedIds: number[];
   seenIds: number[] | null; // legacy
   seenStories: Record<string, string[]> | null; // legacy
   seenIds_0: number[]; // legacy chunk key (migrated to bare "seenIds")
@@ -52,7 +52,7 @@ export interface StorageItems {
 // --- Auto-chunking abstraction ---
 
 /** Byte budget per chunk — leaves headroom below the 8,192-byte per-item limit */
-const CHUNK_BUDGET = 7800;
+const CHUNK_BUDGET = 7000;
 
 /** Descriptor for a storage field that may be split across multiple keys */
 interface ChunkedField<TMemory, TChunk> {
@@ -63,6 +63,11 @@ interface ChunkedField<TMemory, TChunk> {
   fromStorage: (chunks: TChunk[]) => TMemory;
   split: (value: TChunk, budget: number) => TChunk[];
 }
+
+type ChunkedFieldMemory<F extends ChunkedField<any, any>> =
+  F extends ChunkedField<infer TMemory, any> ? TMemory : never;
+type ChunkedFieldChunk<F extends ChunkedField<any, any>> =
+  F extends ChunkedField<any, infer TChunk> ? TChunk : never;
 
 /** Storage key for chunk `i` of a field: bare name for 0, name_N for N>0 */
 export function chunkKey(base: string, i: number): string {
@@ -119,15 +124,15 @@ export function splitRecord<V>(obj: Record<string, V>, budget: number): Record<s
 }
 
 /** Write a chunked field to storage, cleaning up stale chunk keys */
-function saveChunked<TMemory, TChunk>(
-  field: ChunkedField<TMemory, TChunk>,
-  value: TMemory,
+function saveChunked<F extends ChunkedField<any, any>>(
+  field: F,
+  value: ChunkedFieldMemory<F>,
 ): void {
   const serialized = field.toStorage(value);
   const chunks = field.split(serialized, CHUNK_BUDGET);
   if (chunks.length > field.maxChunks) chunks.length = field.maxChunks;
 
-  const data: Record<string, TChunk> = {};
+  const data: Record<string, ChunkedFieldChunk<F>> = {};
   const removeKeys: string[] = [];
   for (let i = 0; i < field.maxChunks; i++) {
     const key = chunkKey(field.key, i);
@@ -142,13 +147,13 @@ function saveChunked<TMemory, TChunk>(
 }
 
 /** Read a chunked field from the items returned by chrome.storage.sync.get */
-export function loadChunked<TMemory, TChunk>(
-  field: ChunkedField<TMemory, TChunk>,
+export function loadChunked<F extends ChunkedField<any, any>>(
+  field: F,
   items: Record<string, unknown>,
-): TMemory {
-  const chunks: TChunk[] = [];
+): ChunkedFieldMemory<F> {
+  const chunks: ChunkedFieldChunk<F>[] = [];
   for (let i = 0; i < field.maxChunks; i++) {
-    const val = items[chunkKey(field.key, i)] as TChunk | undefined;
+    const val = items[chunkKey(field.key, i)] as ChunkedFieldChunk<F> | undefined;
     if (val !== undefined && val !== null) chunks.push(val);
   }
   return field.fromStorage(chunks);
@@ -174,7 +179,20 @@ export const chunkedFields = {
     emptyChunk: [] as number[],
     toStorage: (ids: Set<string>): number[] => {
       const arr = [...ids].map(Number);
-      if (arr.length > MAX_SEEN_IDS) arr.splice(0, arr.length - MAX_SEEN_IDS);
+      if (arr.length > MAX_TRACKED_STORIES) arr.splice(0, arr.length - MAX_TRACKED_STORIES);
+      return arr;
+    },
+    fromStorage: (chunks: number[][]): Set<string> =>
+      new Set(chunks.flat().map(String)),
+    split: splitArray,
+  },
+  dismissedIds: {
+    key: 'dismissedIds',
+    maxChunks: 2,
+    emptyChunk: [] as number[],
+    toStorage: (ids: Set<string>): number[] => {
+      const arr = [...ids].map(Number);
+      if (arr.length > MAX_TRACKED_STORIES) arr.splice(0, arr.length - MAX_TRACKED_STORIES);
       return arr;
     },
     fromStorage: (chunks: number[][]): Set<string> =>
@@ -183,7 +201,7 @@ export const chunkedFields = {
   },
   previousPageRanks: {
     key: 'previousPageRanks',
-    maxChunks: 2,
+    maxChunks: 3,
     emptyChunk: {} as PageRanks,
     toStorage: (v: PageRanks): PageRanks => v,
     fromStorage: (chunks: PageRanks[]): PageRanks => Object.assign({}, ...chunks),
@@ -204,7 +222,7 @@ export const chunkedFields = {
     emptyChunk: [] as number[],
     toStorage: (seenStories: SeenStories): number[] => {
       const ids = Object.keys(seenStories).map(Number);
-      if (ids.length > MAX_SEEN_IDS) ids.splice(0, ids.length - MAX_SEEN_IDS);
+      if (ids.length > MAX_TRACKED_STORIES) ids.splice(0, ids.length - MAX_TRACKED_STORIES);
       return ids;
     },
     fromStorage: (chunks: number[][]): SeenStories => {
@@ -214,7 +232,7 @@ export const chunkedFields = {
     },
     split: splitArray,
   },
-} as const satisfies Record<string, ChunkedField<unknown, unknown>>;
+} as const;
 
 // --- Compact format: rankDiffChangedAt ---
 // Storage:  { "diff,timestamp": [id, ...], ... }
@@ -285,7 +303,7 @@ export function saveSeenStories(seenStories: SeenStories): void {
     }
   }
 
-  if (ids.length > MAX_SEEN_IDS) ids.splice(0, ids.length - MAX_SEEN_IDS);
+  if (ids.length > MAX_TRACKED_STORIES) ids.splice(0, ids.length - MAX_TRACKED_STORIES);
 
   const chunks = splitArray(ids, CHUNK_BUDGET);
   if (chunks.length > chunkedFields.seenIds.maxChunks) {
@@ -320,7 +338,7 @@ export function saveDimState(dimmedEntries: string[], undimmedEntries: string[])
 }
 
 export function saveDismissedIds(dismissedIds: Set<string>): void {
-  chrome.storage.sync.set({ dismissedIds: [...dismissedIds].map(Number) });
+  saveChunked(chunkedFields.dismissedIds, dismissedIds);
 }
 
 export function saveHiddenIds(hiddenIds: Set<string>): void {
@@ -330,7 +348,7 @@ export function saveHiddenIds(hiddenIds: Set<string>): void {
 // --- Maintenance ---
 
 /** Trim an array to the last `max` entries (queue semantics: oldest removed first) */
-export function capArray<T>(arr: T[], max = MAX_ENTRIES): void {
+export function capArray<T>(arr: T[], max = MAX_RANK_DIFF_ENTRIES): void {
   if (arr.length > max) arr.splice(0, arr.length - max);
 }
 
@@ -355,6 +373,21 @@ export function pruneOldRanks(seenStories: SeenStories, previousPageRanks: PageR
   }
 }
 
+/**
+ * Remove entries from a set of story IDs that are older than PRUNE_AGE_SEC.
+ * Uses seenStories timestamps to determine age. IDs not in seenStories are
+ * kept (they may have been hidden/dismissed before being marked as seen).
+ */
+export function pruneOldIds(ids: Set<string>, seenStories: SeenStories): void {
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const id of ids) {
+    const seenAt = seenStories[id];
+    if (typeof seenAt === 'number' && nowSec - seenAt > PRUNE_AGE_SEC) {
+      ids.delete(id);
+    }
+  }
+}
+
 /** Build the defaults object for chrome.storage.sync.get */
 function storageDefaults(): Record<string, unknown> {
   return {
@@ -367,7 +400,6 @@ function storageDefaults(): Record<string, unknown> {
     undimmedEntries: [],
     recentlySeen: {},
     showUnseen: true,
-    dismissedIds: [],
     seenIds: null, // legacy single-key format
     seenStories: null, // legacy compact format
     seenIds_0: [], // legacy chunk key (old scheme)
@@ -395,12 +427,14 @@ export function migrateStorage(
   items: StorageItems,
   seenStories: SeenStories,
   hiddenIds: Set<string>,
+  dismissedIds: Set<string>,
   previousPageRanks: PageRanks,
   rankDiffChangedAt: RankDiffMap,
 ): void {
   // Re-save everything using the chunked format
   saveSeenStories(seenStories);
   saveHiddenIds(hiddenIds);
+  saveDismissedIds(dismissedIds);
   savePageRanks(previousPageRanks);
   saveRankDiffs(rankDiffChangedAt);
 

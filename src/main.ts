@@ -9,7 +9,9 @@ import {
   loadChunked,
   chunkedFields,
   capArray,
+  MAX_DIM_STATE_ENTRIES,
   pruneOldRanks,
+  pruneOldIds,
   migrateStorage,
   STORAGE_VERSION,
 } from './storage.ts';
@@ -29,9 +31,11 @@ loadAll((items) => {
   const hiddenIds = loadChunked(chunkedFields.hiddenIds, rawItems);
   const previousPageRanks = loadChunked(chunkedFields.previousPageRanks, rawItems);
 
+  const dismissedIds = loadChunked(chunkedFields.dismissedIds, rawItems);
+
   // One-time migration: re-save all data in chunked format
   if ((items.storageVersion as number) < STORAGE_VERSION) {
-    migrateStorage(items, seenStories, hiddenIds, previousPageRanks, rankDiffChangedAt);
+    migrateStorage(items, seenStories, hiddenIds, dismissedIds, previousPageRanks, rankDiffChangedAt);
   }
 
   // Sync hidden IDs from the DOM when user visits /hidden pages
@@ -43,9 +47,11 @@ loadAll((items) => {
   // Remove false positives: stories visible on the feed are clearly not hidden
   cleanHiddenIds(hiddenIds);
 
-  capArray(items.dimmedEntries as string[]);
-  capArray(items.undimmedEntries as string[]);
+  capArray(items.dimmedEntries as string[], MAX_DIM_STATE_ENTRIES);
+  capArray(items.undimmedEntries as string[], MAX_DIM_STATE_ENTRIES);
   pruneOldRanks(seenStories, previousPageRanks);
+  pruneOldIds(hiddenIds, seenStories);
+  pruneOldIds(dismissedIds, seenStories);
 
   const dimmingConfig = {
     ciKeywords: items.ciKeywords as string[],
@@ -58,8 +64,6 @@ loadAll((items) => {
   addFavicons();
   adjustTitlesAndPersistDimming(dimmingConfig);
   colorizePoints();
-
-  const dismissedIds = new Set((items.dismissedIds as number[]).map(String));
 
   if (items.showUnseen) showUnseenStories(seenStories, hiddenIds, dismissedIds, dimmingConfig);
   markNewAndTrendingStories(previousPageRanks, rankDiffChangedAt, seenStories);

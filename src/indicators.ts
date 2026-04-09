@@ -14,7 +14,8 @@ import {
   savePageRanks,
   saveHiddenIds,
   capMap,
-  MAX_ENTRIES,
+  MAX_RANK_DIFF_ENTRIES,
+  MAX_TRACKED_STORIES,
   type SeenStories,
   type RankDiffMap,
   type PageRanks,
@@ -54,9 +55,9 @@ export function computeRankDiffs(previousPageRanks: PageRanks, rankDiffChangedAt
     }
   }
 
-  // Cap to MAX_ENTRIES
-  capMap(previousPageRanks, MAX_ENTRIES, (rank) => rank); // keep lowest ranks
-  capMap(rankDiffChangedAt, MAX_ENTRIES, (entry) => entry.t); // keep newest
+  // Cap tracked story state and short-lived trend state separately.
+  capMap(previousPageRanks, MAX_TRACKED_STORIES, (rank) => rank); // keep lowest ranks
+  capMap(rankDiffChangedAt, MAX_RANK_DIFF_ENTRIES, (entry) => entry.t); // keep newest
 
   savePageRanks(previousPageRanks);
   saveRankDiffs(rankDiffChangedAt);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hacker News Mod",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "Enhances Hacker News with new story indicators, rank trends, site icons, story dimming, and an unseen stories panel.",
   "icons": {
     "16": "icon16.png",
@@ -28,5 +28,6 @@
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
-  }
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAm2SY511tmWS3a204EumQC5wAZGtox7gzIYO3BPIl/CMrIoF+U4tn+PLoEIMdi4rdBqVp+bDAQX7dhjauS382axgznybcysTqURmTm/DfN8HuSvZuwYE4RuYx1XGVJe6F8DvGRQCDt4lcIYnl12EtbOg8gVC+6FVeaesWB8PEhw5Gs+C9wpBkGrLDVJeeaOcbRdKE+OaaLHjOer9GCv6jKbMytJBQba1BlI/RUrSHkMcqv5ob45ZReMaB8b6UUkOnFG3blUv4wWyuoDs36MyGvKPPqeibwZlQLvqdi0jShT/NwWhw15XZS5Fiv/meYiAU17ULmw3BIrwg+6nK3MGnWwIDAQAB"
 }

@@ -3,7 +3,7 @@
 // Dims stories matching configured keywords or domains, with manual
 // dim/undim toggle per story. State persists via chrome.storage.sync.
 
-import { capArray, MAX_ENTRIES, saveDimState, type DimmingConfig } from './storage.ts';
+import { capArray, MAX_DIM_STATE_ENTRIES, saveDimState, type DimmingConfig } from './storage.ts';
 
 interface StoryElements {
   trTitle: HTMLElement;
@@ -20,26 +20,39 @@ function escapeForRegex(s: string): string {
 }
 
 /** Check if a story title/site matches any dimming rules */
-function matchesDimRules(
-  title: HTMLElement | null,
-  site: HTMLElement | null,
+export function matchesDimRules(
+  titleText: string | null,
+  siteText: string | null,
   ciKeywords: string[],
   csKeywords: string[],
   domains: string[],
 ): boolean {
-  if (!title) return false;
-  if (site && domains.some((d) => site.innerText.startsWith(d))) return true;
+  if (!titleText) return false;
+  if (siteText && domains.some((d) => siteText.startsWith(d))) return true;
   if (
-    csKeywords.some((kw) => new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(title.innerText))
+    csKeywords.some((kw) => new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(titleText))
   )
     return true;
   if (
     ciKeywords.some((kw) =>
-      new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(title.innerText.toLowerCase()),
+      new RegExp(`(^|\\W)${escapeForRegex(kw)}(\\W|$)`).test(titleText.toLowerCase()),
     )
   )
     return true;
   return false;
+}
+
+export function isStoryDimmed(
+  entryId: string,
+  titleText: string | null,
+  siteText: string | null,
+  config: DimmingConfig,
+): boolean {
+  return (
+    !config.undimmedEntries.includes(entryId) &&
+    (matchesDimRules(titleText, siteText, config.ciKeywords, config.csKeywords, config.domains) ||
+      config.dimmedEntries.includes(entryId))
+  );
 }
 
 /** Apply or remove dimming effect on a story's DOM elements */
@@ -90,7 +103,7 @@ function persistDimState(
   const dimIdx = dimmedEntries.indexOf(entryId);
   if (isDimming && dimIdx === -1) {
     dimmedEntries.push(entryId);
-    capArray(dimmedEntries, MAX_ENTRIES);
+    capArray(dimmedEntries, MAX_DIM_STATE_ENTRIES);
   } else if (!isDimming && dimIdx !== -1) {
     dimmedEntries.splice(dimIdx, 1);
   }
@@ -98,7 +111,7 @@ function persistDimState(
   const undimIdx = undimmedEntries.indexOf(entryId);
   if (!isDimming && undimIdx === -1) {
     undimmedEntries.push(entryId);
-    capArray(undimmedEntries, MAX_ENTRIES);
+    capArray(undimmedEntries, MAX_DIM_STATE_ENTRIES);
   } else if (isDimming && undimIdx !== -1) {
     undimmedEntries.splice(undimIdx, 1);
   }
@@ -130,10 +143,12 @@ export function adjustTitlesAndPersistDimming(config: DimmingConfig): void {
     const els = getStoryElements(trTitle);
     if (!els.entryId) continue;
 
-    const shouldDim =
-      !undimmedEntries.includes(els.entryId) &&
-      (matchesDimRules(els.aTitle, els.aSite, ciKeywords, csKeywords, domains) ||
-        dimmedEntries.includes(els.entryId));
+    const shouldDim = isStoryDimmed(
+      els.entryId,
+      els.aTitle?.innerText ?? els.aTitle?.textContent ?? null,
+      els.aSite?.innerText ?? els.aSite?.textContent ?? null,
+      { ciKeywords, csKeywords, domains, dimmedEntries, undimmedEntries },
+    );
 
     if (shouldDim) applyDimming(els, true);
 

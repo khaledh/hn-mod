@@ -150,7 +150,6 @@ function resetTracking(): void {
   const keys = [
     ...allChunkKeys(),
     'recentlySeen',
-    'dismissedIds',
     // Legacy keys
     'seenIds',
     'seenIds_0',

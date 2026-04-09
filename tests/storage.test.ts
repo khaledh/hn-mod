@@ -202,6 +202,7 @@ describe('allChunkKeys', () => {
     expect(keys).toContain('hiddenIds_1');
     expect(keys).toContain('previousPageRanks');
     expect(keys).toContain('previousPageRanks_1');
+    expect(keys).toContain('previousPageRanks_2');
     expect(keys).toContain('rankDiffChangedAt');
     expect(keys).toContain('rankDiffChangedAt_1');
     expect(keys).toContain('seenIds');

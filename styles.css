@@ -114,6 +114,21 @@ tr.athing > td {
     padding: 4px 0;
     user-select: none;
 }
+.hn-mod-unseen-loading > .hn-mod-unseen-summary {
+    cursor: default;
+    list-style: none;
+    display: block;
+    padding: 0;
+}
+.hn-mod-unseen-loading > .hn-mod-unseen-summary::-webkit-details-marker {
+    display: none;
+}
+.hn-mod-unseen-loading > .hn-mod-unseen-summary::marker {
+    content: "";
+}
+.hn-mod-unseen-loading > .hn-mod-unseen-content {
+    display: none;
+}
 .hn-mod-unseen-content {
     font-size: 10pt;
     color: #828282;
