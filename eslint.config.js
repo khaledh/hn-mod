@@ -10,6 +10,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/', 'scripts/'],
+    ignores: ['unpacked/', 'scripts/'],
   },
 );

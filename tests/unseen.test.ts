@@ -42,6 +42,35 @@ function setPanelOpen(open: boolean): void {
   ) as unknown as typeof chrome.storage.local.get;
 }
 
+function addMoreLink(): void {
+  const table = document.querySelector('table.itemlist');
+  if (!table) throw new Error('Expected main story table');
+
+  const tbody = table.querySelector('tbody');
+  if (!tbody) throw new Error('Expected tbody');
+
+  const tr = document.createElement('tr');
+  const spacerTd = document.createElement('td');
+  spacerTd.setAttribute('colspan', '2');
+  tr.appendChild(spacerTd);
+
+  const td = document.createElement('td');
+  const link = document.createElement('a');
+  link.className = 'morelink';
+  link.href = 'news?p=2';
+  link.textContent = 'More';
+  td.appendChild(link);
+  tr.appendChild(td);
+
+  tbody.appendChild(tr);
+}
+
+function paginationLabels(): string[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>('.hn-mod-pagination a, .hn-mod-pagination span'),
+  ].map((el) => el.textContent || '');
+}
+
 beforeEach(() => {
   mockChrome();
   setLocation('/news');
@@ -163,5 +192,68 @@ describe('showUnseenStories', () => {
 
     expect(document.querySelector('details.hn-mod-unseen')).toBeNull();
     expect(document.querySelector('.hn-mod-unseen')?.textContent).toContain('No new stories');
+  });
+
+  it('shows page links 1 through 10 on page 1 when more pages exist', async () => {
+    setLocation('/news');
+    buildStoryTable([{ id: '100', rank: 1 }]);
+    addMoreLink();
+    mockTopStories(Array.from({ length: 270 }, (_, i) => i + 1));
+
+    await showUnseenStories({}, new Set(), new Set(), {
+      ciKeywords: [],
+      csKeywords: [],
+      domains: [],
+      dimmedEntries: [],
+      undimmedEntries: [],
+    });
+
+    expect(paginationLabels()).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+  });
+
+  it('keeps page links capped at 10 on page 9 when page 10 exists', async () => {
+    setLocation('/news', '?p=9');
+    buildStoryTable([{ id: '100', rank: 241 }]);
+    addMoreLink();
+    mockTopStories(Array.from({ length: 270 }, (_, i) => i + 1));
+
+    await showUnseenStories({}, new Set(), new Set(), {
+      ciKeywords: [],
+      csKeywords: [],
+      domains: [],
+      dimmedEntries: [],
+      undimmedEntries: [],
+    });
+
+    expect(paginationLabels()).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+  });
+
+  it('extends to page 11 on page 10 when a next page exists', async () => {
+    setLocation('/news', '?p=10');
+    buildStoryTable([{ id: '100', rank: 271 }]);
+    addMoreLink();
+    mockTopStories(Array.from({ length: 270 }, (_, i) => i + 1));
+
+    await showUnseenStories({}, new Set(), new Set(), {
+      ciKeywords: [],
+      csKeywords: [],
+      domains: [],
+      dimmedEntries: [],
+      undimmedEntries: [],
+    });
+
+    expect(paginationLabels()).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+      '10',
+      '11',
+    ]);
   });
 });

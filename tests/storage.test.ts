@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   loadSeenStories,
   expandRankDiffs,
@@ -11,7 +11,26 @@ import {
   loadChunked,
   chunkedFields,
   allChunkKeys,
+  saveHiddenIds,
 } from '../src/storage.ts';
+
+let persistedSyncItems: Record<string, unknown>;
+
+beforeEach(() => {
+  persistedSyncItems = {};
+  globalThis.chrome = {
+    storage: {
+      sync: {
+        set: vi.fn((items: Record<string, unknown>) => Object.assign(persistedSyncItems, items)),
+        get: vi.fn(),
+        remove: vi.fn((keys: string[]) => {
+          for (const key of keys) delete persistedSyncItems[key];
+        }),
+      },
+      local: { set: vi.fn(), get: vi.fn() },
+    },
+  } as unknown as typeof chrome;
+});
 
 describe('loadSeenStories', () => {
   it('loads chunked seenIds (new scheme: bare key + _1)', () => {
@@ -195,11 +214,27 @@ describe('loadChunked', () => {
   });
 });
 
+describe('saveHiddenIds', () => {
+  it('retains more than the old two-chunk limit without dropping older hidden stories', () => {
+    const ids = new Set(
+      Array.from({ length: 2500 }, (_, i) => String(10000000 + i)),
+    );
+
+    saveHiddenIds(ids);
+
+    const reloaded = loadChunked(chunkedFields.hiddenIds, persistedSyncItems);
+    expect(reloaded).toEqual(ids);
+    expect(persistedSyncItems.hiddenIds_2).toBeDefined();
+  });
+});
+
 describe('allChunkKeys', () => {
   it('includes bare and suffixed keys for all chunked fields', () => {
     const keys = allChunkKeys();
     expect(keys).toContain('hiddenIds');
     expect(keys).toContain('hiddenIds_1');
+    expect(keys).toContain('hiddenIds_2');
+    expect(keys).toContain('hiddenIds_3');
     expect(keys).toContain('previousPageRanks');
     expect(keys).toContain('previousPageRanks_1');
     expect(keys).toContain('previousPageRanks_2');

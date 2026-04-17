@@ -8,6 +8,7 @@
 
 export const MAX_RANK_DIFF_ENTRIES = 500;
 export const MAX_TRACKED_STORIES = 1167;
+export const MAX_IGNORED_STORIES = 3000;
 export const MAX_DIM_STATE_ENTRIES = 700;
 export const PRUNE_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
 export const FADE_SEC = 30 * 60; // 30 minutes
@@ -175,11 +176,11 @@ function chunkedDefaults(): Record<string, unknown> {
 export const chunkedFields = {
   hiddenIds: {
     key: 'hiddenIds',
-    maxChunks: 2,
+    maxChunks: 4,
     emptyChunk: [] as number[],
     toStorage: (ids: Set<string>): number[] => {
       const arr = [...ids].map(Number);
-      if (arr.length > MAX_TRACKED_STORIES) arr.splice(0, arr.length - MAX_TRACKED_STORIES);
+      if (arr.length > MAX_IGNORED_STORIES) arr.splice(0, arr.length - MAX_IGNORED_STORIES);
       return arr;
     },
     fromStorage: (chunks: number[][]): Set<string> =>
@@ -188,11 +189,11 @@ export const chunkedFields = {
   },
   dismissedIds: {
     key: 'dismissedIds',
-    maxChunks: 2,
+    maxChunks: 4,
     emptyChunk: [] as number[],
     toStorage: (ids: Set<string>): number[] => {
       const arr = [...ids].map(Number);
-      if (arr.length > MAX_TRACKED_STORIES) arr.splice(0, arr.length - MAX_TRACKED_STORIES);
+      if (arr.length > MAX_IGNORED_STORIES) arr.splice(0, arr.length - MAX_IGNORED_STORIES);
       return arr;
     },
     fromStorage: (chunks: number[][]): Set<string> =>

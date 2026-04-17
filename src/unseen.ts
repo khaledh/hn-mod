@@ -295,7 +295,7 @@ function updateRankSpansAfterHiddenRemoval(
 function addPaginationLinks(visibleCount: number): void {
   const page = currentPageNumber();
   const moreLink = document.querySelector<HTMLAnchorElement>('a.morelink');
-  const minPages = moreLink ? page + 1 : page;
+  const minPages = moreLink ? Math.max(10, page + 1) : page;
   const totalPages = Math.max(Math.ceil(visibleCount / STORIES_PER_PAGE), minPages);
   const basePath = window.location.pathname || '/';
 

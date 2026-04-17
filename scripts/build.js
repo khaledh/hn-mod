@@ -3,7 +3,7 @@
 // Build and package the extension.
 //
 // Usage:
-//   node scripts/build.js              — dev build to dist/ (unminified, includes hot-reload)
+//   node scripts/build.js              — dev build to unpacked/ (unminified, includes hot-reload)
 //   node scripts/build.js --watch      — dev build + auto-rebuild on changes
 //   node scripts/build.js --package    — production build + zip (minified, no dev files)
 
@@ -14,7 +14,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DIST = resolve(ROOT, 'dist');
+const DIST = resolve(ROOT, 'unpacked');
 
 const STATIC_FILES = ['styles.css', 'options.html', 'icon16.png', 'icon48.png', 'icon128.png'];
 const STANDALONE_SCRIPTS = ['options', 'hot-reload'];
@@ -48,7 +48,7 @@ async function main() {
   const isPackage = process.argv.includes('--package');
   const isWatch = process.argv.includes('--watch');
 
-  // Clean dist/
+  // Clean unpacked/
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(DIST, { recursive: true });
 
@@ -82,7 +82,7 @@ async function main() {
       // Dev: include hot-reload
       await buildStandaloneScripts(false, STANDALONE_SCRIPTS);
       const version = writeManifest();
-      console.log(`Built v${version} → dist/`);
+      console.log(`Built v${version} → unpacked/`);
     }
   }
 }
