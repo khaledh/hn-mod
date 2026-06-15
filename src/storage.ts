@@ -8,14 +8,16 @@
 
 export const MAX_RANK_DIFF_ENTRIES = 500;
 export const MAX_TRACKED_STORIES = 1167;
-export const MAX_IGNORED_STORIES = 3000;
-export const MAX_DIM_STATE_ENTRIES = 700;
+export const MAX_SEEN_STORIES = 2500;
+export const MAX_SYNC_ACTION_ENTRIES = 1000;
+export const MAX_IGNORED_STORIES = MAX_SYNC_ACTION_ENTRIES;
+export const MAX_DIM_STATE_ENTRIES = MAX_SYNC_ACTION_ENTRIES;
 export const PRUNE_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
 export const FADE_SEC = 30 * 60; // 30 minutes
 
 // --- Shared types ---
 
-export type SeenStories = Record<string, number | true>;
+export type SeenStories = Map<string, number | true>;
 
 export interface RankDiffEntry {
   d: number;
@@ -33,7 +35,7 @@ export interface DimmingConfig {
 }
 
 /** Bump this when the storage format changes to trigger a one-time migration */
-export const STORAGE_VERSION = 3;
+export const STORAGE_VERSION = 4;
 
 export interface StorageItems {
   storageVersion: number;
@@ -128,6 +130,7 @@ export function splitRecord<V>(obj: Record<string, V>, budget: number): Record<s
 function saveChunked<F extends ChunkedField<any, any>>(
   field: F,
   value: ChunkedFieldMemory<F>,
+  area: chrome.storage.StorageArea = chrome.storage.sync,
 ): void {
   const serialized = field.toStorage(value);
   const chunks = field.split(serialized, CHUNK_BUDGET);
@@ -143,8 +146,8 @@ function saveChunked<F extends ChunkedField<any, any>>(
       removeKeys.push(key);
     }
   }
-  chrome.storage.sync.set(data);
-  if (removeKeys.length > 0) chrome.storage.sync.remove(removeKeys);
+  area.set(data);
+  if (removeKeys.length > 0) area.remove?.(removeKeys);
 }
 
 /** Read a chunked field from the items returned by chrome.storage.sync.get */
@@ -169,6 +172,10 @@ function chunkedDefaults(): Record<string, unknown> {
     }
   }
   return defaults;
+}
+
+function definedEntries(items: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(items).filter(([, value]) => value !== undefined));
 }
 
 // --- Field descriptors ---
@@ -222,18 +229,71 @@ export const chunkedFields = {
     maxChunks: 4,
     emptyChunk: [] as number[],
     toStorage: (seenStories: SeenStories): number[] => {
-      const ids = Object.keys(seenStories).map(Number);
-      if (ids.length > MAX_TRACKED_STORIES) ids.splice(0, ids.length - MAX_TRACKED_STORIES);
+      const ids = [...seenStories.keys()].map(Number);
+      if (ids.length > MAX_SEEN_STORIES) ids.splice(0, ids.length - MAX_SEEN_STORIES);
       return ids;
     },
     fromStorage: (chunks: number[][]): SeenStories => {
-      const map: SeenStories = {};
-      for (const id of chunks.flat()) map[String(id)] = true;
+      const map: SeenStories = new Map();
+      for (const id of chunks.flat()) map.set(String(id), true);
       return map;
     },
     split: splitArray,
   },
+  dimmedEntries: {
+    key: 'dimmedEntries',
+    maxChunks: 4,
+    emptyChunk: [] as string[],
+    toStorage: (entries: string[]): string[] => {
+      const arr = [...entries];
+      if (arr.length > MAX_DIM_STATE_ENTRIES) arr.splice(0, arr.length - MAX_DIM_STATE_ENTRIES);
+      return arr;
+    },
+    fromStorage: (chunks: string[][]): string[] => chunks.flat(),
+    split: splitArray,
+  },
+  undimmedEntries: {
+    key: 'undimmedEntries',
+    maxChunks: 4,
+    emptyChunk: [] as string[],
+    toStorage: (entries: string[]): string[] => {
+      const arr = [...entries];
+      if (arr.length > MAX_DIM_STATE_ENTRIES) arr.splice(0, arr.length - MAX_DIM_STATE_ENTRIES);
+      return arr;
+    },
+    fromStorage: (chunks: string[][]): string[] => chunks.flat(),
+    split: splitArray,
+  },
 } as const;
+
+const localChunkedFields = [
+  chunkedFields.previousPageRanks,
+  chunkedFields.rankDiffChangedAt,
+  chunkedFields.seenIds,
+] as const;
+
+function localTrackingKeys(): string[] {
+  const keys = ['recentlySeen'];
+  for (const field of localChunkedFields) {
+    for (let i = 0; i < field.maxChunks; i++) {
+      keys.push(chunkKey(field.key, i));
+    }
+  }
+  return keys;
+}
+
+function syncTrackingCleanupKeys(): string[] {
+  return [
+    ...localTrackingKeys(),
+    // Legacy keys
+    'seenStories',
+    'seenIds_0',
+  ];
+}
+
+export function allLocalTrackingKeys(): string[] {
+  return localTrackingKeys();
+}
 
 // --- Compact format: rankDiffChangedAt ---
 // Storage:  { "diff,timestamp": [id, ...], ... }
@@ -259,7 +319,8 @@ export function compactRankDiffs(flat: RankDiffMap): Record<string, string[]> {
 
 // --- Seen stories ---
 // Storage: seenIds (chunked number arrays) + recentlySeen (timestamp → IDs)
-// In-memory: { id: timestamp | true, ... }
+// In-memory: Map<id, timestamp | true>. Map preserves retention order; plain
+// objects reorder numeric story IDs, which makes old seen stories look new.
 
 /** Load seen data from chunked storage keys into a single in-memory map */
 export function loadSeenStories(items: Partial<StorageItems>): SeenStories {
@@ -267,24 +328,24 @@ export function loadSeenStories(items: Partial<StorageItems>): SeenStories {
   // Migrate from legacy seenIds_0 chunk key (old scheme used _0 for first chunk)
   const legacyChunk0 = items.seenIds_0;
   if (legacyChunk0) {
-    for (const id of legacyChunk0) map[String(id)] = true;
+    for (const id of legacyChunk0) map.set(String(id), true);
   }
   // Migrate from legacy single-key format (seenIds)
   if (items.seenIds) {
-    for (const id of items.seenIds) map[String(id)] = true;
+    for (const id of items.seenIds) map.set(String(id), true);
   }
   // Migrate from legacy compact format (seenStories: { timestamp: [id, ...] })
   if (items.seenStories) {
     for (const [ts, ids] of Object.entries(items.seenStories)) {
       const t = parseInt(ts);
-      for (const id of ids) map[id] = t;
+      for (const id of ids) map.set(id, t);
     }
   }
   // Recent entries overwrite with actual timestamps (for fade calculation)
   const recentlySeen = items.recentlySeen || {};
   for (const [ts, ids] of Object.entries(recentlySeen)) {
     const t = parseInt(ts);
-    for (const id of ids) map[id] = t;
+    for (const id of ids) map.set(id, t);
   }
   return map;
 }
@@ -296,7 +357,7 @@ export function saveSeenStories(seenStories: SeenStories): void {
   const ids: number[] = [];
   const recent: Record<string, string[]> = {};
 
-  for (const [id, val] of Object.entries(seenStories)) {
+  for (const [id, val] of seenStories) {
     ids.push(Number(id));
     if (typeof val === 'number' && nowSec - val < FADE_SEC) {
       const key = String(val);
@@ -304,7 +365,7 @@ export function saveSeenStories(seenStories: SeenStories): void {
     }
   }
 
-  if (ids.length > MAX_TRACKED_STORIES) ids.splice(0, ids.length - MAX_TRACKED_STORIES);
+  if (ids.length > MAX_SEEN_STORIES) ids.splice(0, ids.length - MAX_SEEN_STORIES);
 
   const chunks = splitArray(ids, CHUNK_BUDGET);
   if (chunks.length > chunkedFields.seenIds.maxChunks) {
@@ -322,20 +383,21 @@ export function saveSeenStories(seenStories: SeenStories): void {
     }
   }
 
-  chrome.storage.sync.set(data);
-  if (removeKeys.length > 0) chrome.storage.sync.remove(removeKeys);
+  chrome.storage.local.set(data);
+  if (removeKeys.length > 0) chrome.storage.local.remove?.(removeKeys);
 }
 
 export function saveRankDiffs(rankDiffChangedAt: RankDiffMap): void {
-  saveChunked(chunkedFields.rankDiffChangedAt, rankDiffChangedAt);
+  saveChunked(chunkedFields.rankDiffChangedAt, rankDiffChangedAt, chrome.storage.local);
 }
 
 export function savePageRanks(previousPageRanks: PageRanks): void {
-  saveChunked(chunkedFields.previousPageRanks, previousPageRanks);
+  saveChunked(chunkedFields.previousPageRanks, previousPageRanks, chrome.storage.local);
 }
 
 export function saveDimState(dimmedEntries: string[], undimmedEntries: string[]): void {
-  chrome.storage.sync.set({ dimmedEntries, undimmedEntries });
+  saveChunked(chunkedFields.dimmedEntries, dimmedEntries);
+  saveChunked(chunkedFields.undimmedEntries, undimmedEntries);
 }
 
 export function saveDismissedIds(dismissedIds: Set<string>): void {
@@ -344,6 +406,12 @@ export function saveDismissedIds(dismissedIds: Set<string>): void {
 
 export function saveHiddenIds(hiddenIds: Set<string>): void {
   saveChunked(chunkedFields.hiddenIds, hiddenIds);
+}
+
+/** Move an ID to the newest end of an insertion-ordered set. */
+export function touchOrderedSet(ids: Set<string>, id: string): void {
+  ids.delete(id);
+  ids.add(id);
 }
 
 // --- Maintenance ---
@@ -367,7 +435,7 @@ export function capMap<T>(map: Record<string, T>, max: number, valueFn: (v: T) =
 export function pruneOldRanks(seenStories: SeenStories, previousPageRanks: PageRanks): void {
   const nowSec = Math.floor(Date.now() / 1000);
   for (const id of Object.keys(previousPageRanks)) {
-    const seenAt = seenStories[id];
+    const seenAt = seenStories.get(id);
     if (seenAt === undefined || (typeof seenAt === 'number' && nowSec - seenAt > PRUNE_AGE_SEC)) {
       delete previousPageRanks[id];
     }
@@ -382,7 +450,7 @@ export function pruneOldRanks(seenStories: SeenStories, previousPageRanks: PageR
 export function pruneOldIds(ids: Set<string>, seenStories: SeenStories): void {
   const nowSec = Math.floor(Date.now() / 1000);
   for (const id of ids) {
-    const seenAt = seenStories[id];
+    const seenAt = seenStories.get(id);
     if (typeof seenAt === 'number' && nowSec - seenAt > PRUNE_AGE_SEC) {
       ids.delete(id);
     }
@@ -397,8 +465,6 @@ function storageDefaults(): Record<string, unknown> {
     ciKeywords: [],
     csKeywords: [],
     domains: [],
-    dimmedEntries: [],
-    undimmedEntries: [],
     recentlySeen: {},
     showUnseen: true,
     seenIds: null, // legacy single-key format
@@ -432,19 +498,21 @@ export function migrateStorage(
   previousPageRanks: PageRanks,
   rankDiffChangedAt: RankDiffMap,
 ): void {
-  // Re-save everything using the chunked format
+  // Re-save everything using the current format. Passive tracking lives in
+  // local storage; explicit user actions/settings stay in sync storage.
   saveSeenStories(seenStories);
+  saveDimState(items.dimmedEntries, items.undimmedEntries);
   saveHiddenIds(hiddenIds);
   saveDismissedIds(dismissedIds);
   savePageRanks(previousPageRanks);
   saveRankDiffs(rankDiffChangedAt);
 
-  // Remove legacy keys
-  const legacyKeys: string[] = [];
+  // Remove legacy and passive tracking keys from sync storage.
+  const legacyKeys = syncTrackingCleanupKeys();
   if (items.seenStories) legacyKeys.push('seenStories');
   if (items.seenIds) legacyKeys.push('seenIds');
   if (items.seenIds_0) legacyKeys.push('seenIds_0');
-  if (legacyKeys.length > 0) chrome.storage.sync.remove(legacyKeys);
+  chrome.storage.sync.remove([...new Set(legacyKeys)]);
 
   // Stamp the version
   chrome.storage.sync.set({ storageVersion: STORAGE_VERSION });
@@ -452,5 +520,12 @@ export function migrateStorage(
 
 /** Load all extension data from sync storage */
 export function loadAll(callback: (items: StorageItems) => void): void {
-  chrome.storage.sync.get(storageDefaults(), (items) => callback(items as unknown as StorageItems));
+  chrome.storage.sync.get(storageDefaults(), (syncItems) => {
+    chrome.storage.local.get(localTrackingKeys(), (localItems) => {
+      callback({
+        ...(syncItems as Record<string, unknown>),
+        ...definedEntries(localItems as Record<string, unknown>),
+      } as unknown as StorageItems);
+    });
+  });
 }

@@ -1,6 +1,6 @@
 // Options page — tabbed interface
 
-import { allChunkKeys } from './storage.ts';
+import { allChunkKeys, allLocalTrackingKeys } from './storage.ts';
 
 interface OptionsState {
   ci: string[];
@@ -147,8 +147,9 @@ function restoreOptions(): void {
 
 function resetTracking(): void {
   if (!confirm('Reset all tracking data? This cannot be undone.')) return;
+  const dimmingStorageKeys = new Set(['dimmedEntries', 'undimmedEntries']);
   const keys = [
-    ...allChunkKeys(),
+    ...allChunkKeys().filter((key) => !dimmingStorageKeys.has(key.replace(/_\d+$/, ''))),
     'recentlySeen',
     // Legacy keys
     'seenIds',
@@ -156,25 +157,32 @@ function resetTracking(): void {
     'seenStories',
   ];
   chrome.storage.sync.remove(keys, () => {
-    showStatus('reset-status', 'Reset complete');
-    loadStorageStats();
-    reloadHNTabs();
+    chrome.storage.local.remove(allLocalTrackingKeys(), () => {
+      showStatus('reset-status', 'Reset complete');
+      loadStorageStats();
+      reloadHNTabs();
+    });
   });
 }
 
 // --- Storage stats ---
 
 function loadStorageStats(): void {
-  chrome.storage.sync.get(null, (items) => {
+  chrome.storage.sync.get(null, (syncItems) => {
+    chrome.storage.local.get(null, (localItems) => {
     const container = document.getElementById('storage-stats')!;
     container.innerHTML = '';
 
-    const dimmingKeys = ['ciKeywords', 'csKeywords', 'domains', 'dimmedEntries', 'undimmedEntries'];
     const settingsKeys = ['showUnseen'];
-    const keys = Object.keys(items).sort();
-    const trackingKeys = keys.filter((k) => !dimmingKeys.includes(k) && !settingsKeys.includes(k));
+    const syncKeys = Object.keys(syncItems).sort();
+    const dimmingKeys = syncKeys.filter((k) =>
+      /^(ciKeywords|csKeywords|domains|dimmedEntries(_\d+)?|undimmedEntries(_\d+)?)$/.test(k),
+    );
+    const syncActionKeys = syncKeys.filter((k) => !dimmingKeys.includes(k) && !settingsKeys.includes(k));
+    const localKeys = Object.keys(localItems).sort();
 
-    let totalBytes = 0;
+    let syncTotalBytes = 0;
+    let localTotalBytes = 0;
 
     function entryCount(val: unknown): number | null {
       if (Array.isArray(val)) return val.length;
@@ -186,11 +194,13 @@ function loadStorageStats(): void {
       return null;
     }
 
-    function buildTable(label: string, keyList: string[]): void {
-      const heading = document.createElement('h3');
-      heading.textContent = label;
-      heading.style.cssText = 'font-size: 10pt; color: #333; margin: 12px 0 4px;';
-      container.appendChild(heading);
+    function buildTable(
+      heading: HTMLElement,
+      items: Record<string, unknown>,
+      keyList: string[],
+      total: { bytes: number },
+    ): void {
+      if (keyList.length === 0) return;
 
       const table = document.createElement('table');
       table.className = 'stats-table';
@@ -201,7 +211,7 @@ function loadStorageStats(): void {
       for (const key of keyList) {
         if (!(key in items)) continue;
         const bytes = JSON.stringify(items[key]).length;
-        totalBytes += bytes;
+        total.bytes += bytes;
         const count = entryCount(items[key]);
         const tr = document.createElement('tr');
         tr.innerHTML =
@@ -213,23 +223,81 @@ function loadStorageStats(): void {
 
       table.appendChild(thead);
       table.appendChild(tbody);
-      container.appendChild(table);
+      heading.appendChild(table);
     }
 
-    buildTable('Dimming', dimmingKeys);
-    buildTable('Tracking', trackingKeys);
+    function buildStorageGroup(
+      title: string,
+      subtitle: string,
+      items: Record<string, unknown>,
+      groups: Array<{ label: string; keys: string[] }>,
+      quotaBytes?: number,
+    ): void {
+      const group = document.createElement('section');
+      group.className = 'storage-group';
 
-    // Total
-    const totalTable = document.createElement('table');
-    totalTable.className = 'stats-table';
-    const tfoot = document.createElement('tbody');
-    const totalStr = `${totalBytes.toLocaleString()} / 102,400`;
-    tfoot.innerHTML =
-      `<tr><td colspan="2"><strong>Total</strong></td>` +
-      `<td class="val"><strong>${totalStr}</strong></td></tr>`;
-    totalTable.appendChild(tfoot);
-    totalTable.style.marginTop = '12px';
-    container.appendChild(totalTable);
+      const heading = document.createElement('h3');
+      heading.textContent = title;
+      group.appendChild(heading);
+
+      const description = document.createElement('p');
+      description.textContent = subtitle;
+      group.appendChild(description);
+
+      const total = { bytes: 0 };
+      for (const { label, keys } of groups) {
+        const presentKeys = keys.filter((key) => key in items);
+        if (presentKeys.length === 0) continue;
+
+        const subheading = document.createElement('h4');
+        subheading.textContent = label;
+        group.appendChild(subheading);
+        buildTable(group, items, presentKeys, total);
+      }
+
+      const totalTable = document.createElement('table');
+      totalTable.className = 'stats-table';
+      const tfoot = document.createElement('tbody');
+      const totalStr =
+        quotaBytes === undefined
+          ? total.bytes.toLocaleString()
+          : `${total.bytes.toLocaleString()} / ${quotaBytes.toLocaleString()}`;
+      tfoot.innerHTML =
+        `<tr><td colspan="2"><strong>Total</strong></td>` +
+        `<td class="val"><strong>${totalStr}</strong></td></tr>`;
+      totalTable.appendChild(tfoot);
+      totalTable.style.marginTop = '12px';
+      group.appendChild(totalTable);
+      container.appendChild(group);
+
+      if (title === 'Sync storage') {
+        syncTotalBytes = total.bytes;
+      } else {
+        localTotalBytes = total.bytes;
+      }
+    }
+
+    buildStorageGroup(
+      'Sync storage',
+      'Synced settings and intentional user actions. Limit: 102,400 bytes total, 8,192 bytes per item.',
+      syncItems,
+      [
+        { label: 'Dimming', keys: dimmingKeys },
+        { label: 'Synced actions', keys: syncActionKeys },
+      ],
+      102400,
+    );
+    buildStorageGroup(
+      'Local storage',
+      'Device-local passive tracking and cached data.',
+      localItems,
+      [{ label: 'Local data', keys: localKeys }],
+    );
+
+    if (syncTotalBytes === 0 && localTotalBytes === 0) {
+      container.textContent = 'No storage data found.';
+    }
+    });
   });
 }
 

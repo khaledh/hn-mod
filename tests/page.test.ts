@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect } from 'vitest';
-import { isFrontPage, isListingPage } from '../src/page.ts';
+import { isFrontPage, isItemPage, isListingPage } from '../src/page.ts';
 
 // jsdom provides window.location; we override pathname via history API workaround
 function setPath(path: string) {
@@ -65,5 +65,17 @@ describe('isListingPage', () => {
   it('returns false for /user', () => {
     setPath('/user');
     expect(isListingPage()).toBe(false);
+  });
+});
+
+describe('isItemPage', () => {
+  it('returns true for /item', () => {
+    setPath('/item');
+    expect(isItemPage()).toBe(true);
+  });
+
+  it('returns false for listing pages', () => {
+    setPath('/news');
+    expect(isItemPage()).toBe(false);
   });
 });

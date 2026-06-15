@@ -3,19 +3,20 @@
  */
 import { describe, it, expect } from 'vitest';
 import { buildIndicatorCell } from '../src/indicators.ts';
-import { FADE_SEC } from '../src/storage.ts';
+import { FADE_SEC, type SeenStories } from '../src/storage.ts';
 
 const nowSec = Math.floor(Date.now() / 1000);
+const seen = (entries: [string, number | true][] = []): SeenStories => new Map(entries);
 
 describe('buildIndicatorCell', () => {
   it('returns empty td for null entryId', () => {
-    const td = buildIndicatorCell(null, {}, {}, nowSec);
+    const td = buildIndicatorCell(null, {}, seen(), nowSec);
     expect(td.className).toBe('hn-mod-indicator-cell');
     expect(td.querySelector('.hn-mod-dot')).toBeNull();
   });
 
   it('shows full-opacity dot for never-seen story', () => {
-    const td = buildIndicatorCell('100', {}, {}, nowSec);
+    const td = buildIndicatorCell('100', {}, seen(), nowSec);
     const dot = td.querySelector<HTMLElement>('.hn-mod-dot');
     expect(dot).not.toBeNull();
     expect(parseFloat(dot!.style.opacity)).toBe(1);
@@ -23,7 +24,7 @@ describe('buildIndicatorCell', () => {
 
   it('shows fading dot for recently-seen story', () => {
     const fiveMinAgo = nowSec - 300;
-    const td = buildIndicatorCell('100', {}, { '100': fiveMinAgo }, nowSec);
+    const td = buildIndicatorCell('100', {}, seen([['100', fiveMinAgo]]), nowSec);
     const dot = td.querySelector<HTMLElement>('.hn-mod-dot');
     expect(dot).not.toBeNull();
     const opacity = parseFloat(dot!.style.opacity);
@@ -32,14 +33,14 @@ describe('buildIndicatorCell', () => {
   });
 
   it('shows zero-opacity dot for fully-seen story', () => {
-    const td = buildIndicatorCell('100', {}, { '100': true }, nowSec);
+    const td = buildIndicatorCell('100', {}, seen([['100', true]]), nowSec);
     const dot = td.querySelector<HTMLElement>('.hn-mod-dot');
     expect(parseFloat(dot!.style.opacity)).toBe(0);
   });
 
   it('shows upward trend arrow with green color', () => {
     const diffs = { '100': { d: 3, t: nowSec } };
-    const td = buildIndicatorCell('100', diffs, { '100': true }, nowSec);
+    const td = buildIndicatorCell('100', diffs, seen([['100', true]]), nowSec);
     const marker = td.querySelector<HTMLElement>('.hn-mod-dot')?.previousElementSibling as HTMLElement;
     expect(marker).not.toBeNull();
     expect(marker.style.color).toBe('rgb(34, 139, 34)');
@@ -48,7 +49,7 @@ describe('buildIndicatorCell', () => {
 
   it('shows downward trend arrow with gray color', () => {
     const diffs = { '100': { d: -2, t: nowSec } };
-    const td = buildIndicatorCell('100', diffs, { '100': true }, nowSec);
+    const td = buildIndicatorCell('100', diffs, seen([['100', true]]), nowSec);
     const marker = td.querySelector<HTMLElement>('.hn-mod-dot')?.previousElementSibling as HTMLElement;
     expect(marker).not.toBeNull();
     expect(marker.style.color).toBe('rgb(153, 153, 153)');
@@ -58,7 +59,7 @@ describe('buildIndicatorCell', () => {
   it('shows no arrow when diff entry is fully faded', () => {
     const oldTime = nowSec - FADE_SEC - 1;
     const diffs = { '100': { d: 3, t: oldTime } };
-    const td = buildIndicatorCell('100', diffs, { '100': true }, nowSec);
+    const td = buildIndicatorCell('100', diffs, seen([['100', true]]), nowSec);
     // Only the dot should be present (no marker sibling before it)
     const children = [...td.children];
     expect(children.length).toBe(1);
@@ -67,13 +68,13 @@ describe('buildIndicatorCell', () => {
 
   it('dot has has-arrow class when arrow is present', () => {
     const diffs = { '100': { d: 1, t: nowSec } };
-    const td = buildIndicatorCell('100', diffs, { '100': true }, nowSec);
+    const td = buildIndicatorCell('100', diffs, seen([['100', true]]), nowSec);
     const dot = td.querySelector('.hn-mod-dot');
     expect(dot!.classList.contains('has-arrow')).toBe(true);
   });
 
   it('dot does NOT have has-arrow class when no arrow', () => {
-    const td = buildIndicatorCell('100', {}, { '100': true }, nowSec);
+    const td = buildIndicatorCell('100', {}, seen([['100', true]]), nowSec);
     const dot = td.querySelector('.hn-mod-dot');
     expect(dot!.classList.contains('has-arrow')).toBe(false);
   });

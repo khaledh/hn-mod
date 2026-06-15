@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { showUnseenStories } from '../src/unseen.ts';
+import type { SeenStories } from '../src/storage.ts';
 import { buildStoryTable, mockChrome, cleanup, setLocation } from './helpers/dom-fixtures.ts';
 
 function mockTopStories(ids: number[]): void {
@@ -71,6 +72,10 @@ function paginationLabels(): string[] {
   ].map((el) => el.textContent || '');
 }
 
+function seenStories(): SeenStories {
+  return new Map();
+}
+
 beforeEach(() => {
   mockChrome();
   setLocation('/news');
@@ -91,7 +96,7 @@ describe('showUnseenStories', () => {
     mockTopStories([100, 200]);
 
     await showUnseenStories(
-      {},
+      seenStories(),
       new Set(),
       new Set(),
       {
@@ -114,7 +119,7 @@ describe('showUnseenStories', () => {
     mockTopStories([100, 200]);
 
     await showUnseenStories(
-      {},
+      seenStories(),
       new Set(),
       new Set(),
       {
@@ -142,7 +147,7 @@ describe('showUnseenStories', () => {
     });
 
     await showUnseenStories(
-      {},
+      seenStories(),
       new Set(),
       new Set(),
       {
@@ -172,7 +177,7 @@ describe('showUnseenStories', () => {
     });
 
     await showUnseenStories(
-      {},
+      seenStories(),
       new Set(),
       new Set(),
       {
@@ -200,7 +205,7 @@ describe('showUnseenStories', () => {
     addMoreLink();
     mockTopStories(Array.from({ length: 270 }, (_, i) => i + 1));
 
-    await showUnseenStories({}, new Set(), new Set(), {
+    await showUnseenStories(seenStories(), new Set(), new Set(), {
       ciKeywords: [],
       csKeywords: [],
       domains: [],
@@ -217,7 +222,7 @@ describe('showUnseenStories', () => {
     addMoreLink();
     mockTopStories(Array.from({ length: 270 }, (_, i) => i + 1));
 
-    await showUnseenStories({}, new Set(), new Set(), {
+    await showUnseenStories(seenStories(), new Set(), new Set(), {
       ciKeywords: [],
       csKeywords: [],
       domains: [],
@@ -234,7 +239,7 @@ describe('showUnseenStories', () => {
     addMoreLink();
     mockTopStories(Array.from({ length: 270 }, (_, i) => i + 1));
 
-    await showUnseenStories({}, new Set(), new Set(), {
+    await showUnseenStories(seenStories(), new Set(), new Set(), {
       ciKeywords: [],
       csKeywords: [],
       domains: [],

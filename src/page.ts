@@ -1,6 +1,6 @@
 // Page type detection and DOM helpers for Hacker News
 
-import { saveHiddenIds } from './storage.ts';
+import { saveHiddenIds, touchOrderedSet } from './storage.ts';
 
 /** Front pages have ranked stories with trend tracking (/, /news) */
 export function isFrontPage(): boolean {
@@ -27,6 +27,11 @@ const LISTING_PATHS = [
 ];
 export function isListingPage(): boolean {
   return LISTING_PATHS.includes(window.location.pathname);
+}
+
+/** Story discussion pages show one root story followed by comments */
+export function isItemPage(): boolean {
+  return window.location.pathname === '/item';
 }
 
 /** The /hidden page lists stories the user has hidden */
@@ -75,7 +80,7 @@ export function syncHiddenIdsFromPage(hiddenIds: Set<string>): void {
   for (const row of document.querySelectorAll('tr.athing')) {
     const id = row.getAttribute('id');
     if (id && !hiddenIds.has(id)) {
-      hiddenIds.add(id);
+      touchOrderedSet(hiddenIds, id);
       changed = true;
     }
   }

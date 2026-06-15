@@ -7,12 +7,15 @@
 import { isFrontPage, isListingPage, getPageRanks, currentPageNumber } from './page.ts';
 import { adjustTitlesAndPersistDimming } from './dimming.ts';
 import { addFavicons } from './favicons.ts';
+import { addHnSieveMetadata } from './hn-sieve.ts';
+import { colorizePoints } from './colorize.ts';
 import {
   FADE_SEC,
   saveSeenStories,
   saveRankDiffs,
   savePageRanks,
   saveHiddenIds,
+  touchOrderedSet,
   capMap,
   MAX_RANK_DIFF_ENTRIES,
   MAX_TRACKED_STORIES,
@@ -21,6 +24,8 @@ import {
   type PageRanks,
   type DimmingConfig,
 } from './storage.ts';
+
+let activeFillMissingStories: Promise<void> | null = null;
 
 /** Exponential decay: e^(-3t) where t is normalized age (0..1) */
 export function decay(ageSec: number): number {
@@ -105,7 +110,7 @@ export function buildIndicatorCell(
   }
 
   // New-story dot (always reserve space for alignment)
-  const seenVal = seenStories[entryId];
+  const seenVal = seenStories.get(entryId);
   let dotOpacity = 0;
   if (seenVal === undefined) {
     dotOpacity = 1; // never seen
@@ -149,92 +154,219 @@ interface ObserverContext {
   previousPageRanks: PageRanks;
   rankDiffChangedAt: RankDiffMap;
   seenStories: SeenStories;
+  hiddenIds: Set<string>;
   dimmingConfig: DimmingConfig;
 }
 
-/**
- * On page 2+, HN's client-side JS adds the wrong story at the bottom after a
- * hide (always picks the next story as if on page 1). We fix this by fetching
- * the correct page from the server (which has the right state post-hide) and
- * swapping in the correct last story.
- */
-async function fixWrongStoryOnPage(
-  wrongNode: HTMLElement,
+function prepareStoryRows(
+  titleRow: Element,
+  subRow: Element | null,
+  spacerRow: Element | null,
+  rankDiffChangedAt: RankDiffMap,
+  seenStories: SeenStories,
+  renderTimeSec: number,
+): {
+  titleRow: HTMLTableRowElement;
+  subRow: HTMLTableRowElement | null;
+  spacerRow: HTMLTableRowElement | null;
+  storyId: string | null;
+} {
+  const storyId = titleRow.getAttribute('id');
+  const newTitleRow = document.importNode(titleRow, true) as HTMLTableRowElement;
+  const newSubRow = subRow ? (document.importNode(subRow, true) as HTMLTableRowElement) : null;
+  const newSpacerRow = spacerRow ? (document.importNode(spacerRow, true) as HTMLTableRowElement) : null;
+
+  ensureFavoriteLinkForRow(newSubRow, storyId);
+  newTitleRow.insertBefore(
+    buildIndicatorCell(storyId, rankDiffChangedAt, seenStories, renderTimeSec),
+    newTitleRow.firstChild,
+  );
+
+  return {
+    titleRow: newTitleRow,
+    subRow: newSubRow,
+    spacerRow: newSpacerRow,
+    storyId,
+  };
+}
+
+async function fillMissingStoriesFromPages(
+  storyTable: Element,
   page: number,
+  targetStoryCount: number,
   ctx: ObserverContext,
 ): Promise<void> {
-  const { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig } = ctx;
-  try {
-    const res = await fetch(`${window.location.pathname}?p=${page}`);
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+  if (activeFillMissingStories) {
+    return activeFillMissingStories;
+  }
 
-    const pageRows = doc.querySelectorAll('tr.athing');
-    const lastCorrectRow = pageRows[pageRows.length - 1];
-    if (!lastCorrectRow) return;
-
-    const correctId = lastCorrectRow.getAttribute('id');
-    const wrongId = wrongNode.getAttribute('id');
-    if (wrongId === correctId) return; // already correct
-
-    // On the last page, the server may return fewer stories after the hide,
-    // so the "correct" last story is one already on our page — just remove
-    // the wrong row instead of duplicating.
-    if (correctId && document.getElementById(correctId)) {
-      removeStoryRows(wrongNode);
-      if (wrongId) {
-        delete previousPageRanks[wrongId];
-        savePageRanks(previousPageRanks);
+  const fillPromise = fillMissingStoriesFromPagesNow(storyTable, page, targetStoryCount, ctx).finally(
+    () => {
+      if (activeFillMissingStories === fillPromise) {
+        activeFillMissingStories = null;
       }
+    },
+  );
+  activeFillMissingStories = fillPromise;
+  return fillPromise;
+}
+
+async function fillMissingStoriesFromPagesNow(
+  storyTable: Element,
+  page: number,
+  targetStoryCount: number,
+  ctx: ObserverContext,
+): Promise<void> {
+  const { previousPageRanks, rankDiffChangedAt, seenStories, hiddenIds, dimmingConfig } = ctx;
+  const currentIds = getCurrentStoryIds(storyTable);
+  if (currentIds.size >= targetStoryCount) return;
+
+  try {
+    const rowParent = storyTable.querySelector('tbody') ?? storyTable;
+    let appended = false;
+
+    for (let pageOffset = 0; pageOffset < 5 && currentIds.size < targetStoryCount; pageOffset += 1) {
+      // First try this same page because HN renders it with the logged-in user's
+      // hidden stories applied. If that has not settled yet, continue into later pages.
+      const res = await fetch(`${window.location.pathname}?p=${page + pageOffset}`, {
+        cache: 'no-store',
+      });
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const rows = [...doc.querySelectorAll('tr.athing')];
+
+      for (const row of rows) {
+        if (currentIds.size >= targetStoryCount) break;
+
+        const id = row.getAttribute('id');
+        if (!id) continue;
+        if (currentIds.has(id)) continue;
+        if (hiddenIds.has(id)) continue;
+        if (getCurrentStoryIds(storyTable).has(id)) {
+          currentIds.add(id);
+          continue;
+        }
+
+        const renderTimeSec = Math.floor(Date.now() / 1000);
+        const prepared = prepareStoryRows(
+          row,
+          row.nextElementSibling,
+          row.nextElementSibling?.nextElementSibling ?? null,
+          rankDiffChangedAt,
+          seenStories,
+          renderTimeSec,
+        );
+
+        insertStoryRowsBeforeMore(rowParent, prepared.titleRow, prepared.subRow, prepared.spacerRow);
+
+        currentIds.add(id);
+        appended = true;
+
+        if (prepared.storyId) {
+          const rankEl = prepared.titleRow.querySelector('span.rank');
+          const rank = parseInt(rankEl?.textContent || '');
+          if (!isNaN(rank)) previousPageRanks[prepared.storyId] = rank;
+          if (!seenStories.has(prepared.storyId)) {
+            seenStories.set(prepared.storyId, renderTimeSec);
+            saveSeenStories(seenStories);
+          }
+        }
+      }
+    }
+
+    if (!appended) {
       return;
     }
 
-    // Extract the three rows (title, subtext, spacer) from the parsed page
-    const correctSub = lastCorrectRow.nextElementSibling;
-    const correctSpacer = correctSub?.nextElementSibling;
-
-    const newTitleRow = document.adoptNode(lastCorrectRow) as HTMLTableRowElement;
-    const newSubRow = correctSub ? (document.adoptNode(correctSub) as HTMLTableRowElement) : null;
-    const newSpacerRow = correctSpacer
-      ? (document.adoptNode(correctSpacer) as HTMLTableRowElement)
-      : null;
-
-    // Add indicator cell before inserting (prevents re-processing by observer).
-    // Don't call addEmptyIndicatorToRow here — the observer will handle the
-    // subtext/spacer rows when they're inserted, avoiding double colspan increment.
-    const renderTimeSec = Math.floor(Date.now() / 1000);
-    newTitleRow.insertBefore(
-      buildIndicatorCell(correctId, rankDiffChangedAt, seenStories, renderTimeSec),
-      newTitleRow.firstChild,
-    );
-
-    // Replace wrong rows in the DOM
-    const wrongSub = wrongNode.nextElementSibling;
-    const wrongSpacer = wrongSub?.nextElementSibling;
-
-    wrongNode.replaceWith(newTitleRow);
-    if (wrongSub && newSubRow) wrongSub.replaceWith(newSubRow);
-    if (wrongSpacer && newSpacerRow) wrongSpacer.replaceWith(newSpacerRow);
-
-    // Apply favicons, dimming, and seen links to the new row
     addFavicons();
-    if (dimmingConfig) adjustTitlesAndPersistDimming(dimmingConfig);
-    // Update rank tracking
-    if (wrongId) delete previousPageRanks[wrongId];
-    const rankEl = newTitleRow.querySelector('span.rank');
-    if (rankEl) {
-      const rank = parseInt(rankEl.textContent || '');
-      if (!isNaN(rank) && correctId) previousPageRanks[correctId] = rank;
-    }
+    adjustTitlesAndPersistDimming(dimmingConfig);
+    colorizePoints();
+    void addHnSieveMetadata();
+    renumberStories(storyTable, page);
     savePageRanks(previousPageRanks);
-
-    if (correctId && seenStories[correctId] === undefined) {
-      seenStories[correctId] = renderTimeSec;
-      saveSeenStories(seenStories);
-    }
   } catch {
     /* ignore fetch errors */
   }
+}
+
+function getCurrentStoryIds(storyTable: Element): Set<string> {
+  return new Set(
+    [...storyTable.querySelectorAll<HTMLElement>('tr.athing[id]')]
+      .map((row) => row.getAttribute('id'))
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
+export function insertStoryRowsBeforeMore(
+  rowParent: Element,
+  titleRow: HTMLTableRowElement,
+  subRow: HTMLTableRowElement | null,
+  spacerRow: HTMLTableRowElement | null,
+): void {
+  const moreRow = [...rowParent.querySelectorAll<HTMLAnchorElement>('a.morelink')]
+    .map((link) => link.closest('tr'))
+    .find((row): row is HTMLTableRowElement => row?.parentNode === rowParent) ?? null;
+  const moreSpaceRow = moreRow?.previousElementSibling;
+  const insertionAnchor = moreSpaceRow?.classList.contains('morespace') ? moreSpaceRow : moreRow;
+
+  const insert = (row: HTMLTableRowElement | null) => {
+    if (!row) return;
+    if (insertionAnchor) {
+      rowParent.insertBefore(row, insertionAnchor);
+      return;
+    }
+    rowParent.append(row);
+  };
+
+  insert(titleRow);
+  insert(subRow);
+  insert(spacerRow);
+}
+
+/** Ensure dynamically swapped-in HN rows keep the logged-in favorite action. */
+export function ensureFavoriteLinkForRow(subRow: Element | null, storyId: string | null): void {
+  if (!subRow || !storyId) return;
+
+  const subtext = subRow.querySelector<HTMLElement>('.subtext');
+  if (!subtext) return;
+
+  const hasFavorite = [...subtext.querySelectorAll<HTMLAnchorElement>('a')].some((link) => {
+    const href = link.getAttribute('href') ?? '';
+    return href.startsWith(`fave?id=${storyId}&`) || href.includes(`/fave?id=${storyId}&`);
+  });
+  if (hasFavorite) return;
+
+  const authLink = [...subtext.querySelectorAll<HTMLAnchorElement>('a')].find((link) => {
+    const href = link.getAttribute('href') ?? '';
+    return href.includes(`id=${storyId}`) && href.includes('auth=');
+  });
+  const auth = authLink?.getAttribute('href')?.match(/[?&]auth=([^&]+)/)?.[1];
+  if (!auth) return;
+
+  const favoriteLink = document.createElement('a');
+  favoriteLink.className = '__rhn__fave-button';
+  favoriteLink.href = `fave?id=${storyId}&auth=${auth}`;
+  favoriteLink.textContent = 'favorite';
+
+  const commentsLink = [...subtext.querySelectorAll<HTMLAnchorElement>('a')].find((link) => {
+    const href = link.getAttribute('href') ?? '';
+    const text = link.textContent ?? '';
+    return href === `item?id=${storyId}` && /comments?|discuss/i.test(text);
+  });
+
+  if (commentsLink) {
+    const insertionParent = commentsLink.parentNode;
+    if (insertionParent) {
+      insertionParent.insertBefore(favoriteLink, commentsLink);
+      insertionParent.insertBefore(document.createTextNode(' | '), commentsLink);
+      return;
+    }
+
+    subtext.append(document.createTextNode(' | '), favoriteLink);
+    return;
+  }
+
+  subtext.append(document.createTextNode(' | '), favoriteLink);
 }
 
 // --- DOM helpers ---
@@ -308,8 +440,8 @@ function markVisibleStoriesAsSeen(seenStories: SeenStories): void {
 
   for (const row of document.querySelectorAll('.athing')) {
     const id = row.getAttribute('id');
-    if (id && seenStories[id] === undefined) {
-      seenStories[id] = nowSec;
+    if (id && !seenStories.has(id)) {
+      seenStories.set(id, nowSec);
       updated = true;
     }
   }
@@ -328,7 +460,7 @@ export function handleHideRankAdjustments(
 ): void {
   // Track hidden story IDs (skip during pagination fix replacements)
   if (!suppressHiddenTracking) {
-    for (const id of removedIds) hiddenIds.add(id);
+    for (const id of removedIds) touchOrderedSet(hiddenIds, id);
     if (removedIds.length > 0) saveHiddenIds(hiddenIds);
   }
 
@@ -370,9 +502,16 @@ export function observeNewRows(
   if (!storyTable) return;
 
   let knownStoryIds = new Set(Object.keys(getPageRanks()));
+  const targetStoryCount = knownStoryIds.size;
   let pendingPageFix = false; // set when a hide is detected on page 2+
   let suppressHiddenTracking = false; // suppress during pagination fix replacements
-  const ctx: ObserverContext = { previousPageRanks, rankDiffChangedAt, seenStories, dimmingConfig };
+  const ctx: ObserverContext = {
+    previousPageRanks,
+    rankDiffChangedAt,
+    seenStories,
+    hiddenIds,
+    dimmingConfig,
+  };
 
   const observer = new MutationObserver((mutations) => {
     const renderTimeSec = Math.floor(Date.now() / 1000);
@@ -400,8 +539,8 @@ export function observeNewRows(
         const entryId = row.getAttribute('id');
         const td = buildIndicatorCell(entryId, rankDiffChangedAt, seenStories, renderTimeSec);
         row.insertBefore(td, row.firstChild);
-        if (entryId && seenStories[entryId] === undefined) {
-          seenStories[entryId] = renderTimeSec;
+        if (entryId && !seenStories.has(entryId)) {
+          seenStories.set(entryId, renderTimeSec);
           saveSeenStories(seenStories);
         }
         addedStoryNodes.push(row);
@@ -410,10 +549,15 @@ export function observeNewRows(
       }
     }
 
-    // Apply favicons, dimming, and seen links to newly added stories
+    // Apply favicons, dimming, hn-sieve metadata, and seen links to newly added stories
+    if (addedRows.length > 0) {
+      void addHnSieveMetadata();
+    }
+
     if (addedStoryNodes.length > 0) {
       addFavicons();
       adjustTitlesAndPersistDimming(dimmingConfig);
+      colorizePoints();
     }
 
     // Adjust rank tracking when stories are hidden (front pages only)
@@ -440,9 +584,12 @@ export function observeNewRows(
         const wrongNode = addedStoryNodes[addedStoryNodes.length - 1];
         hideStoryRows(wrongNode);
         suppressHiddenTracking = true;
-        fixWrongStoryOnPage(wrongNode, page, ctx).finally(() => {
-          suppressHiddenTracking = false;
-        });
+        window.setTimeout(() => {
+          removeStoryRows(wrongNode);
+          fillMissingStoriesFromPages(storyTable, page, targetStoryCount, ctx).finally(() => {
+            suppressHiddenTracking = false;
+          });
+        }, 150);
       }
     }
   });

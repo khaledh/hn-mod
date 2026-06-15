@@ -9,7 +9,7 @@ import { isListingPage, currentPageNumber } from './page.ts';
 import { removeStoryRows } from './indicators.ts';
 import { intensityStyle, type IntensityStyle } from './colorize.ts';
 import { adjustTitlesAndPersistDimming, isStoryDimmed } from './dimming.ts';
-import { FADE_SEC, saveHiddenIds, saveDismissedIds, saveSeenStories, type SeenStories, type DimmingConfig } from './storage.ts';
+import { FADE_SEC, saveHiddenIds, saveDismissedIds, saveSeenStories, touchOrderedSet, type SeenStories, type DimmingConfig } from './storage.ts';
 import { fetchTopStoryIds, fetchStory, fetchAuthToken, type HNStory } from './api.ts';
 import { addFavicons } from './favicons.ts';
 
@@ -53,7 +53,7 @@ function storySiteText(story: HNStory): string | null {
 }
 
 function isFreshlyUnseen(seenStories: SeenStories, id: string, nowSec: number): boolean {
-  const seen = seenStories[id];
+  const seen = seenStories.get(id);
   return seen === undefined || (typeof seen === 'number' && nowSec - seen < FADE_SEC);
 }
 
@@ -123,7 +123,7 @@ function addActionLinks(
     link.onclick = async (e) => {
       e.preventDefault();
       if (text === 'hide') {
-        hiddenIds.add(id);
+        touchOrderedSet(hiddenIds, id);
         saveHiddenIds(hiddenIds);
         trTitle.dispatchEvent(
           new CustomEvent('hn-mod-seen', { bubbles: true, detail: { hidden: true } }),
@@ -176,7 +176,7 @@ function buildStoryRows(
   dismissBtn.title = 'Dismiss';
   dismissBtn.onclick = (e) => {
     e.preventDefault();
-    dismissedIds.add(id);
+    touchOrderedSet(dismissedIds, id);
     saveDismissedIds(dismissedIds);
     trTitle.dispatchEvent(new CustomEvent('hn-mod-seen', { bubbles: true }));
   };
@@ -357,8 +357,8 @@ async function appendStoryToPanel(
   const id = String(story.id);
   if (isStoryDimmed(id, story.title, storySiteText(story), dimmingConfig)) return false;
 
-  if (seenStories[id] === undefined) {
-    seenStories[id] = Math.floor(Date.now() / 1000);
+  if (!seenStories.has(id)) {
+    seenStories.set(id, Math.floor(Date.now() / 1000));
     saveSeenStories(seenStories);
   }
 
@@ -473,7 +473,7 @@ async function loadPanelContent(
     const id = match[1];
     const panelRow = table.querySelector<HTMLElement>(`tr.athing[data-story-id="${id}"]`);
     if (panelRow) {
-      hiddenIds.add(id);
+      touchOrderedSet(hiddenIds, id);
       saveHiddenIds(hiddenIds);
       panelRow.dispatchEvent(
         new CustomEvent('hn-mod-seen', { bubbles: true, detail: { hidden: true } }),
@@ -494,7 +494,7 @@ async function loadPanelContent(
     if (!isHidden) {
       const storyId = (trTitle as HTMLElement).dataset.storyId;
       if (storyId) {
-        dismissedIds.add(storyId);
+        touchOrderedSet(dismissedIds, storyId);
         saveDismissedIds(dismissedIds);
       }
     }
@@ -552,7 +552,7 @@ export async function showUnseenStories(
   // Snapshot seen state before the async fetch, since markNewAndTrendingStories
   // may mutate seenStories while we await the API response
   const nowSec = Math.floor(Date.now() / 1000);
-  const seenSnapshot = { ...seenStories };
+  const seenSnapshot = new Map(seenStories);
 
   const topIds = await fetchTopStoryIds();
 
@@ -569,7 +569,7 @@ export async function showUnseenStories(
   for (let i = pageStart; i < Math.min(pageEnd, visibleIds.length); i++) {
     const id = String(visibleIds[i]);
     if (!mainFeedIds.has(id)) {
-      hiddenIds.add(id);
+      touchOrderedSet(hiddenIds, id);
       hiddenUpdated = true;
     }
   }

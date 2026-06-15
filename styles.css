@@ -18,8 +18,29 @@ td {
     font-size: 95%;
 }
 
-.subtext {
-    font-size: 65%;
+.hn-sieve-tldr {
+    display: block;
+    margin: 2px 0 1px;
+    color: #777;
+    font-size: 110%;
+    line-height: 1.35;
+}
+
+.hn-sieve-topic-dot {
+    color: #999;
+}
+
+.hn-sieve-topics {
+    white-space: nowrap;
+}
+
+.hn-sieve-topic {
+    color: #9d3f00;
+    font-weight: 500;
+}
+
+.hn-sieve-topic-dot {
+    padding: 0 0.35em;
 }
 
 a:visited {

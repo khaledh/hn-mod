@@ -21,6 +21,7 @@ import { colorizePoints } from './colorize.ts';
 import { markNewAndTrendingStories, observeNewRows } from './indicators.ts';
 import { showUnseenStories } from './unseen.ts';
 import { addFavicons } from './favicons.ts';
+import { addHnSieveMetadata } from './hn-sieve.ts';
 
 loadAll((items) => {
   // Handles all formats: chunked, legacy single (seenIds), legacy compact (seenStories)
@@ -30,8 +31,9 @@ loadAll((items) => {
   const rankDiffChangedAt = loadChunked(chunkedFields.rankDiffChangedAt, rawItems);
   const hiddenIds = loadChunked(chunkedFields.hiddenIds, rawItems);
   const previousPageRanks = loadChunked(chunkedFields.previousPageRanks, rawItems);
-
   const dismissedIds = loadChunked(chunkedFields.dismissedIds, rawItems);
+  const dimmedEntries = loadChunked(chunkedFields.dimmedEntries, rawItems);
+  const undimmedEntries = loadChunked(chunkedFields.undimmedEntries, rawItems);
 
   // One-time migration: re-save all data in chunked format
   if ((items.storageVersion as number) < STORAGE_VERSION) {
@@ -47,8 +49,8 @@ loadAll((items) => {
   // Remove false positives: stories visible on the feed are clearly not hidden
   cleanHiddenIds(hiddenIds);
 
-  capArray(items.dimmedEntries as string[], MAX_DIM_STATE_ENTRIES);
-  capArray(items.undimmedEntries as string[], MAX_DIM_STATE_ENTRIES);
+  capArray(dimmedEntries, MAX_DIM_STATE_ENTRIES);
+  capArray(undimmedEntries, MAX_DIM_STATE_ENTRIES);
   pruneOldRanks(seenStories, previousPageRanks);
   pruneOldIds(hiddenIds, seenStories);
   pruneOldIds(dismissedIds, seenStories);
@@ -57,11 +59,12 @@ loadAll((items) => {
     ciKeywords: items.ciKeywords as string[],
     csKeywords: items.csKeywords as string[],
     domains: items.domains as string[],
-    dimmedEntries: items.dimmedEntries as string[],
-    undimmedEntries: items.undimmedEntries as string[],
+    dimmedEntries,
+    undimmedEntries,
   };
 
   addFavicons();
+  void addHnSieveMetadata();
   adjustTitlesAndPersistDimming(dimmingConfig);
   colorizePoints();
 

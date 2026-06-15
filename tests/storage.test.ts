@@ -12,12 +12,21 @@ import {
   chunkedFields,
   allChunkKeys,
   saveHiddenIds,
+  saveSeenStories,
+  saveDimState,
+  MAX_SYNC_ACTION_ENTRIES,
 } from '../src/storage.ts';
 
+function entries(map: Map<string, number | true>): Record<string, number | true> {
+  return Object.fromEntries(map);
+}
+
 let persistedSyncItems: Record<string, unknown>;
+let persistedLocalItems: Record<string, unknown>;
 
 beforeEach(() => {
   persistedSyncItems = {};
+  persistedLocalItems = {};
   globalThis.chrome = {
     storage: {
       sync: {
@@ -27,7 +36,13 @@ beforeEach(() => {
           for (const key of keys) delete persistedSyncItems[key];
         }),
       },
-      local: { set: vi.fn(), get: vi.fn() },
+      local: {
+        set: vi.fn((items: Record<string, unknown>) => Object.assign(persistedLocalItems, items)),
+        get: vi.fn(),
+        remove: vi.fn((keys: string[]) => {
+          for (const key of keys) delete persistedLocalItems[key];
+        }),
+      },
     },
   } as unknown as typeof chrome;
 });
@@ -35,31 +50,31 @@ beforeEach(() => {
 describe('loadSeenStories', () => {
   it('loads chunked seenIds (new scheme: bare key + _1)', () => {
     const result = loadSeenStories({ seenIds: [111, 222], seenIds_1: [333] });
-    expect(result).toEqual({ 111: true, 222: true, 333: true });
+    expect(entries(result)).toEqual({ 111: true, 222: true, 333: true });
   });
 
   it('loads recentlySeen with timestamps', () => {
     const result = loadSeenStories({ recentlySeen: { 5000: ['aaa', 'bbb'] } });
-    expect(result).toEqual({ aaa: 5000, bbb: 5000 });
+    expect(entries(result)).toEqual({ aaa: 5000, bbb: 5000 });
   });
 
   it('recent timestamps overwrite seenIds entries', () => {
     const result = loadSeenStories({ seenIds: [111], recentlySeen: { 5000: ['111'] } });
-    expect(result).toEqual({ 111: 5000 });
+    expect(entries(result)).toEqual({ 111: 5000 });
   });
 
   it('migrates legacy seenIds_0 chunk key', () => {
     const result = loadSeenStories({ seenIds_0: [111, 222] });
-    expect(result).toEqual({ 111: true, 222: true });
+    expect(entries(result)).toEqual({ 111: true, 222: true });
   });
 
   it('migrates legacy seenStories compact format', () => {
     const result = loadSeenStories({ seenStories: { 1000: ['aaa'] } });
-    expect(result).toEqual({ aaa: 1000 });
+    expect(entries(result)).toEqual({ aaa: 1000 });
   });
 
   it('handles empty input', () => {
-    expect(loadSeenStories({})).toEqual({});
+    expect(entries(loadSeenStories({}))).toEqual({});
   });
 });
 
@@ -215,7 +230,7 @@ describe('loadChunked', () => {
 });
 
 describe('saveHiddenIds', () => {
-  it('retains more than the old two-chunk limit without dropping older hidden stories', () => {
+  it('keeps the newest explicit hidden actions within the sync cap', () => {
     const ids = new Set(
       Array.from({ length: 2500 }, (_, i) => String(10000000 + i)),
     );
@@ -223,8 +238,57 @@ describe('saveHiddenIds', () => {
     saveHiddenIds(ids);
 
     const reloaded = loadChunked(chunkedFields.hiddenIds, persistedSyncItems);
-    expect(reloaded).toEqual(ids);
-    expect(persistedSyncItems.hiddenIds_2).toBeDefined();
+    expect(reloaded.size).toBe(MAX_SYNC_ACTION_ENTRIES);
+    expect(reloaded.has('10000000')).toBe(false);
+    expect(reloaded.has('10002499')).toBe(true);
+  });
+});
+
+describe('saveSeenStories', () => {
+  it('stores passive seen tracking in local storage', () => {
+    const seen = new Map(
+      Array.from({ length: 2000 }, (_, i) => [String(10000000 + i), true] as const),
+    );
+
+    saveSeenStories(seen);
+
+    const reloaded = loadSeenStories(persistedLocalItems);
+    expect(reloaded.has('10000000')).toBe(true);
+    expect(reloaded.has('10001999')).toBe(true);
+    expect(persistedSyncItems.seenIds).toBeUndefined();
+  });
+
+  it('caps seen stories by insertion order instead of numeric story ID order', () => {
+    const seen = new Map(
+      Array.from({ length: 2600 }, (_, i) => [String(10000000 + i), true] as const),
+    );
+    seen.set('42', true);
+
+    saveSeenStories(seen);
+
+    const reloaded = loadSeenStories(persistedLocalItems);
+    expect(reloaded.has('10000000')).toBe(false);
+    expect(reloaded.has('42')).toBe(true);
+  });
+});
+
+describe('saveDimState', () => {
+  it('keeps newest manually dimmed stories within the sync cap', () => {
+    const dimmed = Array.from({ length: 2500 }, (_, i) => String(10000000 + i));
+
+    saveDimState(dimmed, []);
+
+    const reloaded = loadChunked(chunkedFields.dimmedEntries, persistedSyncItems);
+    expect(reloaded).toEqual(dimmed.slice(-MAX_SYNC_ACTION_ENTRIES));
+  });
+
+  it('keeps newest manually undimmed stories within the sync cap', () => {
+    const undimmed = Array.from({ length: 2500 }, (_, i) => String(10000000 + i));
+
+    saveDimState([], undimmed);
+
+    const reloaded = loadChunked(chunkedFields.undimmedEntries, persistedSyncItems);
+    expect(reloaded).toEqual(undimmed.slice(-MAX_SYNC_ACTION_ENTRIES));
   });
 });
 
@@ -244,5 +308,13 @@ describe('allChunkKeys', () => {
     expect(keys).toContain('seenIds_1');
     expect(keys).toContain('seenIds_2');
     expect(keys).toContain('seenIds_3');
+    expect(keys).toContain('dimmedEntries');
+    expect(keys).toContain('dimmedEntries_1');
+    expect(keys).toContain('dimmedEntries_2');
+    expect(keys).toContain('dimmedEntries_3');
+    expect(keys).toContain('undimmedEntries');
+    expect(keys).toContain('undimmedEntries_1');
+    expect(keys).toContain('undimmedEntries_2');
+    expect(keys).toContain('undimmedEntries_3');
   });
 });
